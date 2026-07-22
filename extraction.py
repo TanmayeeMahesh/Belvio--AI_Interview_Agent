@@ -202,6 +202,34 @@ def parse_question_bank(job_role: str, level: str, num_questions: int) -> list:
     return questions
 
 
+_Q_STEMS = ("who", "what", "when", "where", "why", "how", "can", "could", "would", "do",
+            "does", "did", "have", "has", "tell", "describe", "walk", "explain", "give",
+            "share", "is", "are", "which")
+
+
+def _is_wellformed_question(q: str) -> bool:
+    """Well-formed = long enough AND ends with '?' or opens with a question/imperative stem.
+    Drops the truncated fragments the model sometimes emits (e.g. a trailing 5th item)."""
+    if len(q) < 25 or len(q.split()) < 6:
+        return False
+    if q.rstrip().endswith("?"):
+        return True
+    return q.split()[0].lower().strip(",.:;\"'") in _Q_STEMS
+
+
+def _echoes_input(q: str, *sources, chunk: int = 40) -> bool:
+    """True if a >=chunk-char contiguous slice of q appears verbatim in any source text
+    (the small model tends to parrot the resume/JD — we rank such questions lower)."""
+    ql = " ".join(q.lower().split())
+    if len(ql) < chunk:
+        return False
+    for src in sources:
+        sl = " ".join((src or "").lower().split())
+        if sl and any(ql[i:i + chunk] in sl for i in range(0, len(ql) - chunk + 1, 8)):
+            return True
+    return False
+
+
 def generate_gap_questions(job_title: str, gap_analysis_text: str, jd_text: str, resume_text: str, num_questions: int) -> list:
     """Generate candidate-specific gap questions with the fine-tuned Flan-T5.
 
@@ -231,12 +259,20 @@ def generate_gap_questions(job_title: str, gap_analysis_text: str, jd_text: str,
         )
         raw = _gap_tokenizer.decode(output_ids[0], skip_special_tokens=True)
 
-        # Target format is "1) ... \n2) ... \n ... 5) ...". Split, keep meaningful lines, take top N.
+        # Target format is "1) ... \n2) ... \n ... 5) ...". Split into candidate lines.
         parts = re.split(r'\n?\d\)\s*', raw)
         clean_lines = [p.strip() for p in parts if p.strip() and len(p.strip()) > 10]
 
+        # Quality filter: keep well-formed questions (drops truncated fragments), then rank
+        # questions that DON'T just parrot the resume/JD above ones that do. The 248M model echoes
+        # input text and occasionally emits fragments; this lifts the top N. HR still reviews the plan.
+        wellformed = [q for q in clean_lines if _is_wellformed_question(q)] or clean_lines
+        fresh = [q for q in wellformed if not _echoes_input(q, resume_text, jd_text)]
+        echoy = [q for q in wellformed if _echoes_input(q, resume_text, jd_text)]
+        selected = (fresh + echoy)[:num_questions]
+
         gap_questions = []
-        for q_text in clean_lines[:num_questions]:
+        for q_text in selected:
             gap_questions.append({
                 "question": q_text,
                 "topic": "Gap Skills",

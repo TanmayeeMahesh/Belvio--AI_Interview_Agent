@@ -60,9 +60,12 @@ For a plan of size `N` (clamped to **10–16** inside extraction — every endpo
 1. **Upload the model once** (needs HF login):
    `python scripts/upload_gap_model.py --repo tanmayee2025/belvio-gap-flan-t5`
 2. **Set Space secrets** (staging + prod): `GAP_MODEL_REPO=tanmayee2025/belvio-gap-flan-t5`,
-   `HF_TOKEN=<read token>`.
-3. Deploy branch to **staging** (`hf-staging`), run a full end-to-end interview, confirm gap
-   questions appear in the HR preview and read well.
+   `HF_TOKEN=<read token>`. **Staging also needs `SCHEDULER_ENABLED=false`** — staging shares prod's
+   Supabase + Recall, and the scheduler has no atomic claim, so without this its worker would
+   double-deploy bots for real prod interviews (see app_full `_start_scheduler`).
+3. Deploy branch to **staging** (`hf-staging`); check logs for "GAP model loaded"; test the
+   **preview** path (`/api/generate-questions`) only — do NOT click "Schedule" while staging shares
+   prod's DB. Full schedule→bot flow is unchanged from v2.0.0, so validate that on prod.
 4. Promote to **prod** (`hf`); tag `v2.1.0`.
 
 ## Open risks / to-verify
