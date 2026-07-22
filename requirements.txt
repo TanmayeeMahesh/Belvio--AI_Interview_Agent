@@ -15,3 +15,9 @@ python-multipart
 opencv-python-headless   # frame decode + YuNet/SFace via OpenCV DNN (headless = no GUI libs)
 onnxruntime              # YOLOX-Nano phone detection (CPU; no PyTorch)
 numpy                    # array ops for YOLOX pre/post-processing
+
+# ── Gap-question model (fine-tuned Flan-T5 base, frozen encoder) ──
+transformers             # AutoModelForSeq2SeqLM / AutoTokenizer
+torch                    # CPU inference; install the CPU wheel in Docker (see docs/INTEGRATION_PLAN.md)
+huggingface_hub          # downloads the model from the private HF repo (GAP_MODEL_REPO) at boot
+sentencepiece            # T5 tokenizer safety net

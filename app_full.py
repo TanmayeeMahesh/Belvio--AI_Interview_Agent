@@ -775,6 +775,13 @@ def stuck_session_cleaner():
 def _start_scheduler():
     threading.Thread(target=scheduler_worker, daemon=True).start()
     threading.Thread(target=stuck_session_cleaner, daemon=True).start()
+    # Warm the fine-tuned gap-question model in the background (downloads from the private HF
+    # repo on first cloud boot, then cached). Never blocks startup or fails the app.
+    try:
+        import extraction
+        extraction.prewarm_gap_model()
+    except Exception as e:
+        print(f"⚠️ gap model prewarm skipped: {e}")
 
 
 # ─── DEPLOY ───────────────────────────────────────────────

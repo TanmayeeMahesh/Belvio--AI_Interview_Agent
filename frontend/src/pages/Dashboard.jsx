@@ -144,7 +144,7 @@ export default function Dashboard({ token }) {
     setQuestionsLoading(true); setQuestionsError('')
     try {
       const { data } = await API.post('/api/generate-questions', {
-        analysis, role, questionCount: parseInt(questionCount),
+        analysis, role, questionCount: parseInt(questionCount), tempFiles,
       }, { headers: { authorization: `Bearer ${token}` } })
       setQuestions(Array.isArray(data.questions) ? data.questions : [])
     } catch (e) {
@@ -297,7 +297,7 @@ export default function Dashboard({ token }) {
             </div>
             <div>
               <label>Questions</label>
-              <input type="number" min={5} max={20} value={questionCount} onChange={e => setQuestionCount(e.target.value)} />
+              <input type="number" min={10} max={16} value={questionCount} onChange={e => setQuestionCount(e.target.value)} />
             </div>
             <div>
               <label>Bot joins in (minutes)</label>

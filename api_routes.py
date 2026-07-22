@@ -123,8 +123,12 @@ async def generate_questions(request: Request, authorization: str = Header(None)
     analysis = body.get("analysis", {})
     role     = body.get("role") or analysis.get("jobRole", "Software Engineer")
     qcount   = int(body.get("questionCount", 12))
+    temp     = body.get("tempFiles", {})
+    jd_text  = temp.get("jd_text", "")
+    resume_text = temp.get("resume_text", "")
     try:
-        questions = extraction.generate_question_plan(analysis, role, qcount, keys=keys)
+        questions = extraction.generate_question_plan(
+            analysis, role, jd_text=jd_text, resume_text=resume_text, total_questions=qcount)
     except extraction.llm_stack.LLMExhausted as e:
         raise HTTPException(status_code=429,
                             detail={"error": "llm_exhausted", "providers": e.providers_tried})
@@ -154,7 +158,10 @@ async def schedule(request: Request, authorization: str = Header(None)):
     questions = _sanitize_questions(body.get("questions"))
     if not questions:
         try:
-            questions = extraction.generate_question_plan(analysis, role, qcount, keys=keys)
+            questions = extraction.generate_question_plan(
+                analysis, role,
+                jd_text=temp.get("jd_text", ""), resume_text=temp.get("resume_text", ""),
+                total_questions=qcount)
         except extraction.llm_stack.LLMExhausted as e:
             raise HTTPException(status_code=429,
                                 detail={"error": "llm_exhausted", "providers": e.providers_tried})
