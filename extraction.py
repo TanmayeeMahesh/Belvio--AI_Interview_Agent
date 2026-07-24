@@ -133,15 +133,84 @@ def prewarm_gap_model():
     import threading
     threading.Thread(target=_load_gap_model, daemon=True).start()
 
+# ─── ROLE RESOLUTION (map an arbitrary job title to a stored bank role) ──────
+_ROLE_ALIASES = {
+    "frontend developer": "Frontend Developer", "front end developer": "Frontend Developer",
+    "front-end developer": "Frontend Developer", "frontend engineer": "Frontend Developer",
+    "react developer": "Frontend Developer", "angular developer": "Frontend Developer",
+    "ui developer": "Frontend Developer",
+    "backend developer": "Backend Developer", "back end developer": "Backend Developer",
+    "back-end developer": "Backend Developer", "backend engineer": "Backend Developer",
+    "api developer": "Backend Developer", "server side developer": "Backend Developer",
+    "full stack developer": "Full-Stack Developer", "fullstack developer": "Full-Stack Developer",
+    "full-stack engineer": "Full-Stack Developer", "mern developer": "Full-Stack Developer",
+    "web developer": "Full-Stack Developer",
+    "software developer": "Software Engineer", "sde": "Software Engineer", "programmer": "Software Engineer",
+    "qa engineer": "Software Engineer", "test engineer": "Software Engineer",
+    "ml engineer": "Data Scientist", "machine learning engineer": "Data Scientist",
+    "ai engineer": "Data Scientist", "data engineer": "Data Analyst",
+    "scrum master": "Project Manager",
+    "sales executive": "Sales / Business Development Executive",
+    "business development executive": "Sales / Business Development Executive",
+}
+
+_ROLE_STOPWORDS = {"a", "an", "the", "of", "and", "senior", "junior", "lead", "principal",
+                   "sr", "jr", "associate", "staff", "i", "ii", "iii", "engineer", "developer",
+                   "specialist", "executive", "analyst", "manager"}
+
+
+def list_bank_roles() -> list:
+    """Canonical role names, parsed live from question_bank.md headers (## N. Name)."""
+    try:
+        with open("question_bank.md", "r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception:
+        return []
+    return [m.strip() for m in re.findall(r'^## \d+\.\s+(.+)$', content, flags=re.MULTILINE)]
+
+
+def _role_tokens(s: str) -> set:
+    return {t for t in re.split(r'[^a-z0-9]+', (s or "").lower()) if t and t not in _ROLE_STOPWORDS}
+
+
+def resolve_bank_role(job_role: str):
+    """Map an arbitrary job title to a stored bank role.
+    Returns (canonical_role or None, method): exact → substring → alias → token-overlap."""
+    roles = list_bank_roles()
+    if not roles or not job_role:
+        return (None, "none")
+    jr = job_role.strip().lower()
+    for r in roles:                                    # 1. exact
+        if r.lower() == jr:
+            return (r, "exact")
+    for r in roles:                                    # 2. substring (either direction)
+        rl = r.lower()
+        if jr in rl or rl in jr:
+            return (r, "substring")
+    if jr in _ROLE_ALIASES and _ROLE_ALIASES[jr] in roles:   # 3. alias map
+        return (_ROLE_ALIASES[jr], "alias")
+    jt = _role_tokens(job_role)                        # 4. token overlap (Jaccard)
+    best, best_score = None, 0.0
+    for r in roles:
+        rt = _role_tokens(r)
+        if jt and rt:
+            score = len(jt & rt) / len(jt | rt)
+            if score > best_score:
+                best, best_score = r, score
+    if best and best_score >= 0.34:
+        return (best, "nearest")
+    return (None, "none")
+
+
 def parse_question_bank(job_role: str, level: str, num_questions: int) -> list:
     level_map = {
         "fresher": ["Fresher (0–1 year of experience)"],
         "intermediate": ["Experienced (1–3 years of experience)", "Experienced (3–5 years of experience)"],
         "experienced": ["Experienced (5+ years of experience)"]
     }
-    
+
     target_levels = level_map.get(level.lower(), level_map["intermediate"])
-    
+
     try:
         with open("question_bank.md", "r", encoding="utf-8") as f:
             content = f.read()
@@ -149,16 +218,24 @@ def parse_question_bank(job_role: str, level: str, num_questions: int) -> list:
         return []
 
     roles = re.split(r'\n## \d+\.\s+', content)
-    
-    best_role_chunk = None
-    for chunk in roles[1:]:
-        role_title = chunk.split('\n')[0].strip().lower()
-        if job_role.lower() in role_title or role_title in job_role.lower():
-            best_role_chunk = chunk
+    role_titles = [chunk.split('\n')[0].strip() for chunk in roles[1:]]
+
+    jr = (job_role or "").strip().lower()
+    best_idx = None
+    for i, rt in enumerate(role_titles):               # exact match first
+        if rt.lower() == jr:
+            best_idx = i
             break
-            
-    if not best_role_chunk:
-        best_role_chunk = roles[1] if len(roles) > 1 else ""
+    if best_idx is None:                               # then substring (either direction)
+        for i, rt in enumerate(role_titles):
+            rl = rt.lower()
+            if jr and (jr in rl or rl in jr):
+                best_idx = i
+                break
+    if best_idx is None:
+        return []          # NO silent default to the first role — caller decides the fallback
+
+    best_role_chunk = roles[1:][best_idx]
 
     categories = re.split(r'\n###\s+', best_role_chunk)
     category_lists = []
@@ -286,7 +363,53 @@ def generate_gap_questions(job_title: str, gap_analysis_text: str, jd_text: str,
         logger.error(f"Failed to generate gap questions: {e}")
         return []
 
-def generate_question_plan(analysis: dict, role: str = None, jd_text: str = "", resume_text: str = "", total_questions: int = 10) -> list:
+def generate_tech_questions_llm(role, level, count, analysis, jd_text="", resume_text="", keys=None) -> list:
+    """Generate `count` role/level technical questions via the LLM stack — used when HR chooses
+    'Generate with AI' for a role that isn't in the question bank."""
+    if count <= 0:
+        return []
+    system = ("You are a world-class technical interviewer. Generate precise, role-appropriate "
+              "technical interview questions. ALWAYS return ONLY a valid JSON array.")
+    user = f"""Generate EXACTLY {count} technical interview questions for this role.
+
+ROLE: {role}
+CANDIDATE LEVEL: {level}
+SKILLS FROM RESUME: {', '.join(analysis.get('skills', []) or [])}
+TECH STACK: {', '.join(analysis.get('technicalStack', []) or [])}
+
+Rules:
+- Questions must be specific to the {role} role and appropriate for a {level} candidate.
+- Progress from fundamentals to applied/scenario depth.
+- Phrase each to be read aloud (TTS) — natural and clear.
+
+Return ONLY a JSON array, each item EXACTLY:
+[{{"question": "...", "topic": "short topic", "question_type": "technical",
+   "depth": "surface|medium|deep", "target_skill": "...", "key_concepts": ["..."]}}]"""
+    try:
+        plan = llm_stack.call_json(system, user, job="parsing", max_tokens=2000, keys=keys)
+    except llm_stack.LLMExhausted:
+        raise
+    except Exception as e:
+        logger.error(f"generate_tech_questions_llm failed: {e}")
+        return []
+    if not isinstance(plan, list):
+        return []
+    out = []
+    for q in plan[:count]:
+        if isinstance(q, dict) and q.get("question"):
+            out.append({
+                "question": q.get("question", "").strip(),
+                "topic": q.get("topic", "Technical"),
+                "question_type": "technical",
+                "depth": q.get("depth", "medium"),
+                "target_skill": q.get("target_skill", role),
+                "key_concepts": q.get("key_concepts", []) if isinstance(q.get("key_concepts"), list) else [],
+            })
+    return out
+
+
+def generate_question_plan(analysis: dict, role: str = None, jd_text: str = "", resume_text: str = "",
+                           total_questions: int = 10, role_source: str = "bank", keys: dict = None) -> list:
     role = role or analysis.get("jobRole", "Software Engineer")
     level = str(analysis.get("detectedLevel", "fresher") or "fresher").lower()
 
@@ -363,11 +486,25 @@ def generate_question_plan(analysis: dict, role: str = None, jd_text: str = "", 
         
     actual_gap_count = len(gap_questions)
     
-    # 3. Technical Questions (Remaining questions to reach total perfectly)
+    # 3. Technical Questions (the ~50% middle) — from the bank (exact role), a nearest-role match,
+    #    or the LLM, per how HR chose the role (role_source: 'bank' | 'match' | 'llm').
     tech_count = total_questions - (intro_count + actual_gap_count)
+    tech_questions = []
     if tech_count > 0:
-        bank_questions = parse_question_bank(role, level, tech_count)
-        questions.extend(bank_questions)
+        if role_source == "llm":
+            tech_questions = generate_tech_questions_llm(role, level, tech_count, analysis, jd_text, resume_text, keys)
+        else:
+            canonical = role
+            if role_source == "match":
+                resolved, _method = resolve_bank_role(role)
+                canonical = resolved or role
+            tech_questions = parse_question_bank(canonical, level, tech_count)
+        if not tech_questions:
+            fb_roles = list_bank_roles()
+            fb = fb_roles[0] if fb_roles else role
+            logger.warning(f"No technical questions for role '{role}' (source={role_source}) — falling back to bank '{fb}'")
+            tech_questions = parse_question_bank(fb, level, tech_count)
+    questions.extend(tech_questions)
         
     # Append gap questions AFTER technical questions
     questions.extend(gap_questions)

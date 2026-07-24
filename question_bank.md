@@ -1,7 +1,7 @@
 # Master Interview Question Bank
 ## Experience-Segregated Edition
 
-*14 Job Roles × 5 Categories × 10 Questions (700 Questions Total)*
+*17 Job Roles × 5 Categories × 10 Questions (850 Questions Total)*
 
 ### How this question bank is organized
 
@@ -1755,3 +1755,375 @@ For every job role, each of the five categories below contains 10 questions spli
 
 9. How do you advise leadership on industry shifts affecting cybersecurity strategy?
 10. Describe how you've helped shape organizational policy in response to an industry or regulatory change.
+
+---
+
+## 15. Frontend Developer
+
+### Core Concepts
+
+#### Fresher (0–1 year of experience)
+
+1. What is frontend development, and why is it important for a Frontend Developer?
+2. Explain how a browser turns HTML, CSS, and JavaScript into what the user sees on screen.
+3. What is the DOM, and how does JavaScript interact with it?
+
+#### Experienced (1–3 years of experience)
+
+4. How do you approach making a layout responsive across mobile, tablet, and desktop?
+5. Describe how you manage component state in a real project, and when you'd lift state up.
+6. How do you apply semantic HTML and accessibility (a11y) principles in your day-to-day work?
+
+#### Experienced (3–5 years of experience)
+
+7. How would you improve the perceived performance of a slow-loading page you inherited?
+8. What frontend concept do you find most misunderstood by newer developers, and how do you clarify it?
+
+#### Experienced (5+ years of experience)
+
+9. How has your understanding of core frontend principles (rendering, state, performance) evolved, and how do you now teach it to juniors?
+10. What long-term strategic principle guides your approach to frontend architecture at a leadership level?
+
+### Role-Specific Fundamentals
+
+#### Fresher (0–1 year of experience)
+
+1. What do you understand to be the primary responsibilities of a Frontend Developer?
+2. How would you approach prioritizing tasks in your first few weeks as a Frontend Developer?
+3. Walk through what a typical day might look like for a Frontend Developer in an entry-level position.
+
+#### Experienced (1–3 years of experience)
+
+4. Describe your typical workflow from receiving a design (e.g., a Figma file) to shipping a working UI.
+5. What signals or metrics do you track to measure the quality of your frontend work?
+6. Describe a challenging UI bug you faced and how you resolved it.
+
+#### Experienced (3–5 years of experience)
+
+7. How do you balance pixel-perfect design fidelity with development speed and maintainability?
+8. What responsibilities have you taken on beyond writing UI code (e.g., design systems, code reviews), and why?
+
+#### Experienced (5+ years of experience)
+
+9. How do you define success for a team of Frontend Developers that you manage or mentor?
+10. What systemic, organization-level frontend challenge have you helped resolve, such as a shared component library?
+
+### Tools & Technologies
+
+#### Fresher (0–1 year of experience)
+
+1. Which tools and libraries are commonly used in frontend development, and what are they generally used for?
+2. Have you used a framework like React, Vue, or Angular? What did you build with it?
+3. What would you look for when learning a new frontend framework or library for the first time?
+
+#### Experienced (1–3 years of experience)
+
+4. Compare a library like React with a full framework like Angular — when would you choose one over the other?
+5. What are the limitations of the frontend framework you use most, that you've experienced firsthand?
+6. How do you use browser developer tools to debug a rendering or performance issue?
+
+#### Experienced (3–5 years of experience)
+
+7. Describe a time you helped migrate a codebase from one frontend framework or major version to another.
+8. How do you decide on the right frontend stack (framework, state management, styling) for a new project?
+
+#### Experienced (5+ years of experience)
+
+9. How do you set frontend tooling and coding standards across a team or organization?
+10. What's your framework for build-vs-buy decisions on frontend tools such as component libraries or design systems?
+
+### Frameworks & Methodologies
+
+#### Fresher (0–1 year of experience)
+
+1. What frameworks or methodologies have you learned about that are used in frontend development?
+2. What do you understand about component-driven development, and why is it useful?
+3. Why do you think structured methodologies matter in frontend development?
+
+#### Experienced (1–3 years of experience)
+
+4. How does Agile influence your day-to-day work as a Frontend Developer?
+5. How do you approach testing your frontend code across unit, integration, and end-to-end levels?
+6. How do you measure whether your component or design-system approach is working well?
+
+#### Experienced (3–5 years of experience)
+
+7. Describe a time you adapted a process or methodology to fit your frontend team's needs.
+8. What are the pitfalls of over-engineering a frontend architecture, and how do you avoid them?
+
+#### Experienced (5+ years of experience)
+
+9. How do you decide which frontend practices or frameworks to roll out across multiple teams?
+10. How do you drive adoption of a new frontend framework or design system across a resistant organization?
+
+### Industry Knowledge
+
+#### Fresher (0–1 year of experience)
+
+1. What current trends or challenges are you aware of in the frontend development industry?
+2. What web standards or guidelines have you learned are relevant to a Frontend Developer, such as accessibility (e.g., WCAG)?
+3. Why is it important for a Frontend Developer to stay updated on browser and framework changes?
+
+#### Experienced (1–3 years of experience)
+
+4. How does the trend toward server-side rendering or meta-frameworks (e.g., Next.js) influence your work?
+5. What industry challenge, such as Core Web Vitals or accessibility compliance, has directly impacted a project you worked on?
+6. How do you stay current with the fast-changing frontend ecosystem?
+
+#### Experienced (3–5 years of experience)
+
+7. How have you adapted your frontend work in response to a major industry shift, such as the move from SPAs to server-side rendering?
+8. What emerging trend in frontend do you think will most affect this role in the next few years?
+
+#### Experienced (5+ years of experience)
+
+9. How do you advise leadership on frontend technology strategy and industry shifts?
+10. Describe how you've helped shape frontend standards or policy in response to an industry change.
+
+---
+
+## 16. Backend Developer
+
+### Core Concepts
+
+#### Fresher (0–1 year of experience)
+
+1. What is backend development, and why is it important for a Backend Developer?
+2. Explain what happens on the server when a client sends an HTTP request to an API.
+3. What fundamental concepts, such as request/response, databases, and APIs, should a Backend Developer know before starting their career?
+
+#### Experienced (1–3 years of experience)
+
+4. How do you design a simple REST API endpoint — what do you consider for the route, method, and response?
+5. Describe how you modeled and queried data in a relational database for a feature you built.
+6. How do you apply core backend principles such as input validation and error handling to a real project problem?
+
+#### Experienced (3–5 years of experience)
+
+7. How would you improve an inefficient or slow API endpoint you inherited?
+8. What backend concept do you find most misunderstood by newer developers, and how do you clarify it?
+
+#### Experienced (5+ years of experience)
+
+9. How has your understanding of backend principles (scalability, consistency, reliability) evolved, and how do you now teach it to juniors?
+10. What long-term strategic principle guides your approach to backend architecture at a leadership level?
+
+### Role-Specific Fundamentals
+
+#### Fresher (0–1 year of experience)
+
+1. What do you understand to be the primary responsibilities of a Backend Developer?
+2. How would you approach prioritizing tasks in your first few weeks as a Backend Developer?
+3. Walk through what a typical day might look like for a Backend Developer in an entry-level position.
+
+#### Experienced (1–3 years of experience)
+
+4. Describe a typical workflow you follow when building and shipping a new API feature.
+5. What metrics, such as latency or error rate, do you track to measure the health of your services?
+6. Describe a challenging backend bug or outage you faced and how you resolved it.
+
+#### Experienced (3–5 years of experience)
+
+7. How do you balance delivering features quickly with maintaining reliability and managing technical debt?
+8. What responsibilities have you taken on beyond writing endpoints, such as on-call duty or data design, and why?
+
+#### Experienced (5+ years of experience)
+
+9. How do you define success for a team of Backend Developers that you manage or mentor?
+10. What systemic, organization-level backend challenge have you helped resolve, such as a shared service or platform?
+
+### Tools & Technologies
+
+#### Fresher (0–1 year of experience)
+
+1. Which tools and technologies are commonly used in backend development, and what are they generally used for?
+2. Have you used a database like PostgreSQL or MongoDB? What did you use it for?
+3. What would you look for when learning a new backend framework or database for the first time?
+
+#### Experienced (1–3 years of experience)
+
+4. Compare SQL and NoSQL databases — when would you choose one over the other?
+5. What are the limitations of the backend framework or database you use most, from firsthand experience?
+6. How do you use logging, metrics, or tracing tools to debug a production issue?
+
+#### Experienced (3–5 years of experience)
+
+7. Describe a time you introduced caching or a message queue to solve a performance or scaling problem.
+8. How do you decide on the right backend stack (language, framework, database) for a new service?
+
+#### Experienced (5+ years of experience)
+
+9. How do you set backend tooling and standards, such as API conventions and observability, across a team?
+10. What's your framework for build-vs-buy decisions on backend infrastructure, such as managed versus self-hosted services?
+
+### Frameworks & Methodologies
+
+#### Fresher (0–1 year of experience)
+
+1. What frameworks or methodologies have you learned about that are used in backend development?
+2. What do you understand about REST or another API style, and how might it apply to backend development?
+3. Why do you think structured methodologies matter in backend development?
+
+#### Experienced (1–3 years of experience)
+
+4. How does Agile influence your day-to-day work as a Backend Developer?
+5. How do you approach testing your backend code across unit, integration, and contract tests?
+6. How do you measure whether your API design or service architecture is working well?
+
+#### Experienced (3–5 years of experience)
+
+7. Describe a time you adapted an architectural pattern, such as moving from a monolith to services, to fit your team's needs.
+8. What are the pitfalls of over-applying microservices, and how do you avoid them?
+
+#### Experienced (5+ years of experience)
+
+9. How do you decide which backend patterns or frameworks to roll out across multiple teams?
+10. How do you drive adoption of a new backend standard or framework across a resistant organization?
+
+### Industry Knowledge
+
+#### Fresher (0–1 year of experience)
+
+1. What current trends or challenges are you aware of in the backend development industry?
+2. What standards or practices have you learned are relevant to a Backend Developer, such as security (e.g., OWASP) and data protection?
+3. Why is it important for a Backend Developer to stay updated on industry news and security advisories?
+
+#### Experienced (1–3 years of experience)
+
+4. How does the trend toward cloud-native or serverless architectures influence your work?
+5. What industry challenge, such as scaling or data privacy, has directly impacted a project you worked on?
+6. How do you stay current with backend technologies and security best practices?
+
+#### Experienced (3–5 years of experience)
+
+7. How have you adapted your backend work in response to a major industry shift, such as the move to cloud or containers?
+8. What emerging trend in backend do you think will most affect this role in the next few years?
+
+#### Experienced (5+ years of experience)
+
+9. How do you advise leadership on backend technology strategy and industry shifts?
+10. Describe how you've helped shape backend standards or policy in response to an industry or regulatory change.
+
+---
+
+## 17. Full-Stack Developer
+
+### Core Concepts
+
+#### Fresher (0–1 year of experience)
+
+1. What is full-stack development, and why is it important for a Full-Stack Developer?
+2. Explain the end-to-end flow of a web request, from the browser UI through the backend to the database and back.
+3. What fundamental concepts across frontend and backend should a Full-Stack Developer know before starting their career?
+
+#### Experienced (1–3 years of experience)
+
+4. How do you decide whether a piece of logic should live on the frontend or the backend?
+5. Describe how you built a feature end-to-end, from the UI to the API to the data layer.
+6. How do you apply core principles across the stack, such as validation, state, and error handling, to a real problem?
+
+#### Experienced (3–5 years of experience)
+
+7. How would you improve an inefficient feature that spans both the frontend and the backend?
+8. What full-stack concept do you find most misunderstood by newer developers, and how do you clarify it?
+
+#### Experienced (5+ years of experience)
+
+9. How has your understanding of full-stack architecture evolved over your career, and how do you now teach it to juniors?
+10. What long-term strategic principle guides your approach to full-stack architecture at a leadership level?
+
+### Role-Specific Fundamentals
+
+#### Fresher (0–1 year of experience)
+
+1. What do you understand to be the primary responsibilities of a Full-Stack Developer?
+2. How would you approach prioritizing tasks in your first few weeks as a Full-Stack Developer?
+3. Walk through what a typical day might look like for a Full-Stack Developer in an entry-level position.
+
+#### Experienced (1–3 years of experience)
+
+4. Describe your workflow for delivering a feature that touches both the frontend and the backend.
+5. What metrics do you track across the stack to measure the success of what you build?
+6. Describe a challenging cross-stack bug, such as a frontend/backend contract mismatch, and how you resolved it.
+
+#### Experienced (3–5 years of experience)
+
+7. How do you balance depth versus breadth to stay effective across both frontend and backend?
+8. What responsibilities have you taken on beyond coding, such as architecture or DevOps, and why?
+
+#### Experienced (5+ years of experience)
+
+9. How do you define success for a team of Full-Stack Developers that you manage or mentor?
+10. What systemic, organization-level challenge spanning the whole stack have you helped resolve?
+
+### Tools & Technologies
+
+#### Fresher (0–1 year of experience)
+
+1. Which tools and technologies across the stack are commonly used by a Full-Stack Developer, and what for?
+2. Have you worked with both a frontend framework and a backend or database? What did you build?
+3. What would you look for when learning a new tool on either side of the stack for the first time?
+
+#### Experienced (1–3 years of experience)
+
+4. Compare using a full-stack framework such as Next.js versus separate frontend and backend apps — what are the trade-offs?
+5. What are the limitations of the main stack you use, from firsthand experience?
+6. How do you use debugging tools across the stack — browser dev tools plus server logs — to trace an issue end-to-end?
+
+#### Experienced (3–5 years of experience)
+
+7. Describe a time you helped migrate or unify a stack, such as consolidating frontend and backend tooling.
+8. How do you decide on the right end-to-end stack for a new project?
+
+#### Experienced (5+ years of experience)
+
+9. How do you set tooling and coding standards across the full stack for a team or organization?
+10. What's your framework for build-vs-buy decisions on full-stack tooling and infrastructure?
+
+### Frameworks & Methodologies
+
+#### Fresher (0–1 year of experience)
+
+1. What frameworks or methodologies have you learned about that are used in full-stack development?
+2. What do you understand about separating concerns between frontend and backend, and why does it matter?
+3. Why do you think structured methodologies matter in full-stack development?
+
+#### Experienced (1–3 years of experience)
+
+4. How does Agile influence your day-to-day work as a Full-Stack Developer?
+5. How do you approach testing across the stack, covering frontend, backend, and integration?
+6. How do you measure whether your end-to-end architecture is working well?
+
+#### Experienced (3–5 years of experience)
+
+7. Describe a time you adapted an architecture or process to fit your full-stack team's needs.
+8. What are the pitfalls of a single developer owning too much of the stack, and how do you manage that risk?
+
+#### Experienced (5+ years of experience)
+
+9. How do you decide which full-stack practices or frameworks to roll out across multiple teams?
+10. How do you drive adoption of a new end-to-end framework across a resistant organization?
+
+### Industry Knowledge
+
+#### Fresher (0–1 year of experience)
+
+1. What current trends or challenges are you aware of in full-stack and web development?
+2. What standards or practices have you learned that are relevant across the stack, such as security and accessibility?
+3. Why is it important for a Full-Stack Developer to stay updated across both frontend and backend ecosystems?
+
+#### Experienced (1–3 years of experience)
+
+4. How does the trend toward full-stack meta-frameworks (e.g., Next.js) or serverless influence your work?
+5. What industry challenge has directly impacted a full-stack project you worked on?
+6. How do you stay current across the fast-moving frontend and backend landscapes at the same time?
+
+#### Experienced (3–5 years of experience)
+
+7. How have you adapted your full-stack work in response to a major industry shift?
+8. What emerging trend do you think will most affect the full-stack role in the next few years?
+
+#### Experienced (5+ years of experience)
+
+9. How do you advise leadership on end-to-end technology strategy and industry shifts?
+10. Describe how you've helped shape full-stack standards or policy in response to an industry change.

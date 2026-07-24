@@ -85,7 +85,11 @@ export default function Dashboard({ token }) {
   const [stats, setStats] = useState(null)
   const [resume, setResume] = useState(null)
   const [jd, setJd] = useState(null)
-  const [role, setRole] = useState('Software Engineer')
+  const [roleSelect, setRoleSelect] = useState('Software Engineer')  // dropdown value or '__other__'
+  const [customRole, setCustomRole] = useState('')                   // free-text when 'Other'
+  const [otherMode, setOtherMode] = useState('match')                // 'match' (nearest bank) | 'llm'
+  const [roleOptions, setRoleOptions] = useState(ROLE_SUGGESTIONS)    // stored bank roles from /api/roles
+  const [roleInfo, setRoleInfo] = useState(null)                     // how an 'Other' role was resolved
   const [analysis, setAnalysis] = useState(null)
   const [tempFiles, setTempFiles] = useState(null)
   const [analyseLoading, setAnalyseLoading] = useState(false)
@@ -104,6 +108,10 @@ export default function Dashboard({ token }) {
   const [questionsError, setQuestionsError] = useState('')
   const [newQ, setNewQ] = useState('')
 
+  const isOther = roleSelect === '__other__'
+  const effRole = (isOther ? customRole : roleSelect).trim()
+  const roleSource = isOther ? otherMode : 'bank'
+
   useEffect(() => {
     if (!token) return
     API.get('/api/hr/sessions', { headers: { authorization: `Bearer ${token}` } })
@@ -115,6 +123,9 @@ export default function Dashboard({ token }) {
         setStats({ all: ss.length, completed, scheduled, inProgress, incomplete: ss.length - completed - scheduled - inProgress })
       })
       .catch(() => {})
+    API.get('/api/roles', { headers: { authorization: `Bearer ${token}` } })
+      .then(r => setRoleOptions(Array.isArray(r.data?.roles) && r.data.roles.length ? r.data.roles : ROLE_SUGGESTIONS))
+      .catch(() => {})
   }, [token])
 
   async function handleAnalyse() {
@@ -125,14 +136,18 @@ export default function Dashboard({ token }) {
       const form = new FormData()
       if (resume) form.append('resume', resume)
       if (jd)     form.append('jd', jd)
-      form.append('role', role)
+      form.append('role', effRole)
       const { data } = await API.post('/api/analyse', form, {
         headers: { authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }
       })
       setAnalysis(data.analysis)
       setTempFiles(data.tempFiles)
       if (data.analysis.candidateEmail) setEmail(data.analysis.candidateEmail)
-      if (data.analysis.jobRole) setRole(data.analysis.jobRole)
+      if (data.analysis.jobRole) {
+        const jr = data.analysis.jobRole
+        if (roleOptions.includes(jr)) setRoleSelect(jr)
+        else { setRoleSelect('__other__'); setCustomRole(jr); setOtherMode('match') }
+      }
     } catch (e) {
       const msg = e.response?.data?.detail
       setAnalyseError(typeof msg === 'string' ? msg : 'Analysis failed. Check server logs.')
@@ -144,9 +159,10 @@ export default function Dashboard({ token }) {
     setQuestionsLoading(true); setQuestionsError('')
     try {
       const { data } = await API.post('/api/generate-questions', {
-        analysis, role, questionCount: parseInt(questionCount), tempFiles,
+        analysis, role: effRole, roleSource, questionCount: parseInt(questionCount), tempFiles,
       }, { headers: { authorization: `Bearer ${token}` } })
       setQuestions(Array.isArray(data.questions) ? data.questions : [])
+      setRoleInfo(data.roleInfo || null)
     } catch (e) {
       const msg = e.response?.data?.detail
       setQuestionsError(typeof msg === 'string' ? msg : 'Could not generate the question plan. Check server logs.')
@@ -175,7 +191,7 @@ export default function Dashboard({ token }) {
     setScheduleLoading(true); setScheduleError('')
     try {
       const { data } = await API.post('/api/schedule', {
-        analysis, tempFiles, role,
+        analysis, tempFiles, role: effRole, roleSource,
         questionCount: parseInt(questionCount),
         questions,                              // HR-reviewed plan (server persists exactly these)
         confirmedEmail: email,
@@ -217,16 +233,39 @@ export default function Dashboard({ token }) {
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
           <div style={{ flex: 1 }}>
             <label>Role</label>
-            <input
-              type="text"
-              list="role-list"
-              value={role}
-              onChange={e => setRole(e.target.value)}
-              placeholder="e.g. Software Engineer"
-            />
-            <datalist id="role-list">
-              {ROLE_SUGGESTIONS.map(r => <option key={r} value={r} />)}
-            </datalist>
+            <select value={roleSelect} onChange={e => {
+              const v = e.target.value
+              setRoleSelect(v)
+              if (v === '__other__') setOtherMode('match')
+            }}>
+              {roleOptions.map(r => <option key={r} value={r}>{r}</option>)}
+              <option value="__other__">Other (specify)…</option>
+            </select>
+            {isOther && (
+              <div style={{ marginTop: 8 }}>
+                <input
+                  type="text"
+                  value={customRole}
+                  onChange={e => setCustomRole(e.target.value)}
+                  placeholder="e.g. Machine Learning Engineer"
+                />
+                <div style={{ display: 'flex', gap: 14, marginTop: 6, fontSize: 13 }}>
+                  <label style={{ display: 'flex', gap: 5, alignItems: 'center', fontWeight: 400 }}>
+                    <input type="radio" name="otherMode" checked={otherMode === 'match'}
+                      onChange={() => setOtherMode('match')} /> Match nearest stored role
+                  </label>
+                  <label style={{ display: 'flex', gap: 5, alignItems: 'center', fontWeight: 400 }}>
+                    <input type="radio" name="otherMode" checked={otherMode === 'llm'}
+                      onChange={() => setOtherMode('llm')} /> Generate with AI
+                  </label>
+                </div>
+              </div>
+            )}
+            {roleInfo && roleInfo.resolved && (
+              <div className="text-secondary text-xs" style={{ marginTop: 6 }}>
+                No exact bank role for "{roleInfo.requested}" — using <b>{roleInfo.resolved}</b> questions ({roleInfo.method}).
+              </div>
+            )}
           </div>
           <button className="btn-primary" onClick={handleAnalyse} disabled={analyseLoading} style={{ height: 38, minWidth: 120 }}>
             {analyseLoading ? 'Analysing…' : 'Analyse'}
@@ -259,7 +298,7 @@ export default function Dashboard({ token }) {
             </div>
             <div>
               <div className="text-secondary text-xs">Job Role</div>
-              <div className="font-semibold">{a.jobRole || role}</div>
+              <div className="font-semibold">{a.jobRole || effRole}</div>
             </div>
           </div>
           {a.analysisSummary && (
