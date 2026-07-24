@@ -728,6 +728,11 @@ def scheduler_worker():
     while True:
         try:
             for row in db.due_scheduled_interviews():
+                # Atomic claim first: flip 'scheduled' -> 'launching'. If another instance sharing
+                # this DB already claimed it, skip — this is what prevents two bots in one meeting.
+                if not db.claim_scheduled_interview(row["id"]):
+                    print(f"⏭️  {row['id']} already claimed by another worker — skipping")
+                    continue
                 print(f"🗓️  launching scheduled interview {row['id']}")
                 result = deploy_bot(row["meeting_url"], session_id=row.get("session_id"))
                 if result.get("status") == "deployed":
