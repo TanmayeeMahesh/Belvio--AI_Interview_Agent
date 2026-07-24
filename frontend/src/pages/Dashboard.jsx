@@ -1,9 +1,12 @@
 import { useState, useRef, useEffect } from 'react'
 import API from '../api'
 
+// Fallback list shown until /api/roles loads — mirrors the 17 stored bank roles, in bank order.
 const ROLE_SUGGESTIONS = [
-  'Software Engineer', 'Frontend Developer', 'Backend Developer', 'Full Stack Developer',
-  'Business Analyst', 'Data Scientist', 'Product Manager', 'DevOps Engineer', 'QA Engineer', 'Data Engineer'
+  'Software Engineer', 'Data Analyst', 'Data Scientist', 'Product Manager', 'Project Manager',
+  'Business Analyst', 'DevOps Engineer', 'UI/UX Designer', 'HR Executive', 'Digital Marketing Specialist',
+  'Sales / Business Development Executive', 'Customer Success Manager', 'Finance Analyst',
+  'Cybersecurity Analyst', 'Frontend Developer', 'Backend Developer', 'Full-Stack Developer',
 ]
 
 // Only meeting platforms the interview bot / Recall.ai can join. A YouTube or random URL fails this.
