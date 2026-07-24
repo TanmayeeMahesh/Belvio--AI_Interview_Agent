@@ -258,6 +258,47 @@ def claim_scheduled_interview(row_id: str) -> bool:
     return _exec(op, default=False, label="claim_scheduled_interview")
 
 
+# ─── JOB ROLES (JD uploaded once per role; 80% static set stored per experience level) ──
+def create_job_role(owner_id: str, role_name: str, role_source: str, question_count: int,
+                    jd_text: str, jd_analysis: dict, question_sets: dict) -> dict | None:
+    """Insert a role card. Returns the row (with id) or None."""
+    def op(db):
+        res = db.table("job_roles").insert({
+            "owner_id": owner_id, "role_name": role_name, "role_source": role_source,
+            "question_count": question_count, "jd_text": jd_text,
+            "jd_analysis": jd_analysis, "question_sets": question_sets,
+        }).execute()
+        row = res.data[0]
+        print(f"[DB]  job_role {row['id']} — {role_name}")
+        return row
+    return _exec(op, default=None, label="create_job_role")
+
+
+def list_job_roles(owner_id: str) -> list:
+    """Role cards for an HR user, newest first (light columns for the card grid)."""
+    if not owner_id:
+        return []
+    def op(db):
+        res = (db.table("job_roles")
+               .select("id,role_name,role_source,question_count,created_at")
+               .eq("owner_id", owner_id).order("created_at", desc=True).execute())
+        return res.data or []
+    return _exec(op, default=[], label="list_job_roles")
+
+
+def get_job_role(role_id: str, owner_id: str = None) -> dict | None:
+    """Full role card (incl. jd_text + question_sets). Scoped to owner_id when provided."""
+    if not role_id:
+        return None
+    def op(db):
+        q = db.table("job_roles").select("*").eq("id", role_id)
+        if owner_id:
+            q = q.eq("owner_id", owner_id)
+        res = q.limit(1).execute()
+        return res.data[0] if res.data else None
+    return _exec(op, default=None, label="get_job_role")
+
+
 def update_scheduled_interview(row_id: str, **fields) -> None:
     """Patch a scheduled-interview row (status, bot_id, email_sent, ...)."""
     if not row_id:

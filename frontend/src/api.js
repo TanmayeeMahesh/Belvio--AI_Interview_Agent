@@ -1,13 +1,16 @@
 import axios from "axios";
 
 const API = axios.create({
-  baseURL:
-    import.meta.env.VITE_API_URL ||
-    "http://localhost:8000"
+  baseURL: import.meta.env.VITE_API_URL || "http://localhost:8000",
 });
 
+// Backend (auth.verify_token) requires the "Bearer <token>" form; clear it on logout.
 export function setAuthToken(token) {
-  API.defaults.headers.common["authorization"] = token;
+  if (token) {
+    API.defaults.headers.common["authorization"] = `Bearer ${token}`;
+  } else {
+    delete API.defaults.headers.common["authorization"];
+  }
 }
 
 export default API;

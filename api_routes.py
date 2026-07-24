@@ -80,7 +80,7 @@ def _sanitize_questions(raw):
 # ─── US-AG-01: upload + parse JD/resume ───────────────────
 @router.post("/api/analyse")
 async def analyse(resume: UploadFile = File(None), jd: UploadFile = File(None),
-                  role: str = Form("Software Engineer"),
+                  role: str = Form("Software Engineer"), roleId: str = Form(None),
                   authorization: str = Header(None)):
     user = _require_user(authorization)
     keys = auth.get_user_keys_decrypted(auth.user_id_from(user))  # per-user LLM keys
@@ -98,6 +98,14 @@ async def analyse(resume: UploadFile = File(None), jd: UploadFile = File(None),
             f.write(await jd.read())
         jd_text = extraction.extract_text(jp)
         temp["jd_path"] = jp
+    # Role card: the JD was uploaded ONCE when the card was created — reuse it here so the
+    # candidate only uploads a resume.
+    if roleId and not jd_text:
+        card = db.get_job_role(roleId, auth.user_id_from(user))
+        if card:
+            jd_text = card.get("jd_text") or ""
+            role = card.get("role_name") or role
+            temp["roleId"] = roleId
     if not resume_text and not jd_text:
         raise HTTPException(status_code=400, detail="Upload at least one document.")
 
@@ -119,6 +127,57 @@ async def roles(authorization: str = Header(None)):
     return {"roles": extraction.list_bank_roles()}
 
 
+# ─── ROLE CARDS: JD uploaded ONCE per role; 80% static set stored per experience level ──
+@router.post("/api/role-cards")
+async def create_role_card(jd: UploadFile = File(None),
+                           roleName: str = Form("Software Engineer"),
+                           roleSource: str = Form("bank"), questionCount: int = Form(12),
+                           authorization: str = Header(None)):
+    """Create a role card from a one-time JD upload. Stores the JD + the 80% static question set
+    per experience level, reused for every candidate under this role."""
+    user = _require_user(authorization)
+    uid = auth.user_id_from(user)
+    keys = auth.get_user_keys_decrypted(uid)
+    if not jd:
+        raise HTTPException(status_code=400, detail="A job description (PDF) is required.")
+    jp = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}_{jd.filename}")
+    with open(jp, "wb") as f:
+        f.write(await jd.read())
+    jd_text = extraction.extract_text(jp)
+    try:
+        jd_analysis = extraction.analyze_documents(jd_text, "", roleName, keys=keys)
+    except extraction.llm_stack.LLMExhausted as e:
+        raise HTTPException(status_code=429,
+                            detail={"error": "llm_exhausted", "providers": e.providers_tried})
+    qc = max(10, min(16, int(questionCount or 12)))
+    question_sets = {
+        lvl: extraction.build_static_plan(roleName, lvl, qc, roleSource,
+                                          analysis=jd_analysis, jd_text=jd_text, keys=keys)
+        for lvl in ("fresher", "intermediate", "experienced")
+    }
+    card = db.create_job_role(uid, roleName, roleSource, qc, jd_text, jd_analysis, question_sets)
+    if not card:
+        raise HTTPException(status_code=500, detail="Could not save the role card.")
+    return {"id": card["id"], "role_name": roleName, "role_source": roleSource,
+            "question_count": qc, "jd_preview": (jd_text or "")[:600]}
+
+
+@router.get("/api/role-cards")
+async def list_role_cards(authorization: str = Header(None)):
+    user = _require_user(authorization)
+    return {"roleCards": db.list_job_roles(auth.user_id_from(user))}
+
+
+@router.get("/api/role-cards/{role_id}")
+async def get_role_card(role_id: str, authorization: str = Header(None)):
+    user = _require_user(authorization)
+    card = db.get_job_role(role_id, auth.user_id_from(user))
+    if not card:
+        raise HTTPException(status_code=404, detail="Role card not found.")
+    return {"id": card["id"], "role_name": card["role_name"], "role_source": card["role_source"],
+            "question_count": card["question_count"], "jd_preview": (card.get("jd_text") or "")[:600]}
+
+
 # ─── US-AG-02 preview: generate the question plan for HR review (no DB writes) ──
 @router.post("/api/generate-questions")
 async def generate_questions(request: Request, authorization: str = Header(None)):
@@ -131,9 +190,34 @@ async def generate_questions(request: Request, authorization: str = Header(None)
     role     = body.get("role") or analysis.get("jobRole", "Software Engineer")
     qcount   = int(body.get("questionCount", 12))
     role_source = body.get("roleSource", "bank")
+    role_id  = body.get("roleId")
     temp     = body.get("tempFiles", {})
     jd_text  = temp.get("jd_text", "")
     resume_text = temp.get("resume_text", "")
+
+    # ── Role card: reuse the stored 80% static set for the candidate's level; add ~20% gap ──
+    if role_id:
+        card = db.get_job_role(role_id, auth.user_id_from(user))
+        if not card:
+            raise HTTPException(status_code=404, detail="Role card not found.")
+        level = str(analysis.get("detectedLevel") or "fresher").lower()
+        sets = card.get("question_sets") or {}
+        static = sets.get(level) or next(iter(sets.values()), None)
+        if not static:
+            raise HTTPException(status_code=400, detail="Role card has no stored question set.")
+        jd_for_gap = jd_text or card.get("jd_text") or ""
+        gap, gap_n = [], int(static.get("gap_count", 0))
+        if resume_text and jd_for_gap and gap_n > 0:
+            gap_text = analysis.get("gapAnalysisText") or ""
+            if not gap_text:
+                missing = analysis.get("missingSkills", [])
+                gap_text = (f"Candidate lacks experience with {', '.join(missing)}."
+                            if missing else "No major skill gaps identified.")
+            gap = extraction.generate_gap_questions(card.get("role_name", role), gap_text,
+                                                    jd_for_gap, resume_text, gap_n)
+        return {"questions": extraction.assemble_plan(static, gap),
+                "roleInfo": None, "roleMismatch": None}
+
     try:
         questions = extraction.generate_question_plan(
             analysis, role, jd_text=jd_text, resume_text=resume_text,
