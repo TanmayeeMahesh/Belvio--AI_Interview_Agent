@@ -149,7 +149,17 @@ async def generate_questions(request: Request, authorization: str = Header(None)
             fb = extraction.list_bank_roles()
             resolved, method = (fb[0] if fb else role), "fallback"
         role_info = {"requested": role, "resolved": resolved, "method": method}
-    return {"questions": questions, "roleInfo": role_info}
+    # warn (non-blocking) if HR's chosen role contradicts the role detected from the documents
+    role_mismatch = None
+    detected = (analysis.get("jobRole") or "").strip()
+    if detected:
+        sel_c, _ = extraction.resolve_bank_role(role)
+        det_c, _ = extraction.resolve_bank_role(detected)
+        sel = (sel_c or role).strip().lower()
+        det = (det_c or detected).strip().lower()
+        if sel and det and sel != det:
+            role_mismatch = {"selected": role, "detected": detected}
+    return {"questions": questions, "roleInfo": role_info, "roleMismatch": role_mismatch}
 
 
 # ─── US-AG-02 + scheduling: generate questions, store, email, schedule bot ──
@@ -171,6 +181,11 @@ async def schedule(request: Request, authorization: str = Header(None)):
 
     if not meeting_url:
         raise HTTPException(status_code=400, detail="A meeting link is required.")
+    if not scheduler.is_supported_meeting_url(meeting_url):
+        raise HTTPException(status_code=400, detail=(
+            f"That doesn't look like a supported meeting link. Please paste a "
+            f"{scheduler.SUPPORTED_MEETING_PLATFORMS} link — the interview bot can't join a "
+            f"YouTube or other link."))
 
     # 1. use the HR-reviewed plan if provided, else generate one (backward-compatible)
     questions = _sanitize_questions(body.get("questions"))

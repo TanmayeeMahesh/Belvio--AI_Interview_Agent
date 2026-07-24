@@ -6,6 +6,10 @@ const ROLE_SUGGESTIONS = [
   'Business Analyst', 'Data Scientist', 'Product Manager', 'DevOps Engineer', 'QA Engineer', 'Data Engineer'
 ]
 
+// Only meeting platforms the interview bot / Recall.ai can join. A YouTube or random URL fails this.
+const MEETING_URL_RE = /^https?:\/\/(([\w-]+\.)?zoom\.us\/|meet\.google\.com\/|teams\.(microsoft|live)\.com\/|([\w-]+\.)?webex\.com\/)/i
+const isSupportedMeetingUrl = (u) => MEETING_URL_RE.test((u || '').trim())
+
 function DropZone({ label, file, onChange, accept = '.pdf' }) {
   const ref = useRef()
   const [drag, setDrag] = useState(false)
@@ -90,6 +94,7 @@ export default function Dashboard({ token }) {
   const [otherMode, setOtherMode] = useState('match')                // 'match' (nearest bank) | 'llm'
   const [roleOptions, setRoleOptions] = useState(ROLE_SUGGESTIONS)    // stored bank roles from /api/roles
   const [roleInfo, setRoleInfo] = useState(null)                     // how an 'Other' role was resolved
+  const [roleMismatch, setRoleMismatch] = useState(null)             // selected role vs detected jobRole
   const [analysis, setAnalysis] = useState(null)
   const [tempFiles, setTempFiles] = useState(null)
   const [analyseLoading, setAnalyseLoading] = useState(false)
@@ -163,6 +168,7 @@ export default function Dashboard({ token }) {
       }, { headers: { authorization: `Bearer ${token}` } })
       setQuestions(Array.isArray(data.questions) ? data.questions : [])
       setRoleInfo(data.roleInfo || null)
+      setRoleMismatch(data.roleMismatch || null)
     } catch (e) {
       const msg = e.response?.data?.detail
       setQuestionsError(typeof msg === 'string' ? msg : 'Could not generate the question plan. Check server logs.')
@@ -187,6 +193,10 @@ export default function Dashboard({ token }) {
   async function handleSchedule() {
     if (!email.trim()) { setScheduleError('Candidate email is required to send the invite.'); return }
     if (!meetingUrl.trim()) { setScheduleError('Meeting link is required.'); return }
+    if (!isSupportedMeetingUrl(meetingUrl)) {
+      setScheduleError('Unsupported meeting link — use a Zoom, Google Meet, or Microsoft Teams link (not a YouTube or other link).')
+      return
+    }
     if (!questions || questions.length === 0) { setScheduleError('Generate and confirm the question plan first.'); return }
     setScheduleLoading(true); setScheduleError('')
     try {
@@ -266,6 +276,11 @@ export default function Dashboard({ token }) {
                 No exact bank role for "{roleInfo.requested}" — using <b>{roleInfo.resolved}</b> questions ({roleInfo.method}).
               </div>
             )}
+            {roleMismatch && (
+              <div className="text-xs" style={{ marginTop: 6, color: '#b45309' }}>
+                ⚠️ The documents look like <b>{roleMismatch.detected}</b>, but you selected <b>{roleMismatch.selected}</b>. Questions target <b>{roleMismatch.selected}</b> — change the role above if that's not intended.
+              </div>
+            )}
           </div>
           <button className="btn-primary" onClick={handleAnalyse} disabled={analyseLoading} style={{ height: 38, minWidth: 120 }}>
             {analyseLoading ? 'Analysing…' : 'Analyse'}
@@ -333,6 +348,11 @@ export default function Dashboard({ token }) {
             <div>
               <label>Meeting Link</label>
               <input value={meetingUrl} onChange={e => setMeetingUrl(e.target.value)} placeholder="https://teams.microsoft.com/meet/..." />
+              {meetingUrl.trim() && !isSupportedMeetingUrl(meetingUrl) && (
+                <div className="text-xs" style={{ marginTop: 4, color: '#b45309' }}>
+                  Use a Zoom, Google Meet, or Microsoft Teams link.
+                </div>
+              )}
             </div>
             <div>
               <label>Questions</label>
