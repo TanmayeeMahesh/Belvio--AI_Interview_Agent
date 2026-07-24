@@ -50,7 +50,7 @@ CANDIDATE RESUME:
 
 Rules:
 - Detect experience level from years of experience, job titles, project complexity, responsibilities.
-- fresher = <1 year, intermediate = 1-5 years, experienced = 5+ years.
+- fresher = <1 year, junior = 1–3 years, mid = 3–5 years, senior = 5+ years.
 - Scan the resume text for the candidate's email address if present.
 
 Return EXACTLY this JSON (no deviations):
@@ -58,7 +58,7 @@ Return EXACTLY this JSON (no deviations):
   "candidateName": "extracted full name or 'Candidate'",
   "candidateEmail": "extracted email or null",
   "jobRole": "the specific role title from the JD or the provided role",
-  "detectedLevel": "fresher|intermediate|experienced",
+  "detectedLevel": "fresher|junior|mid|senior",
   "levelReason": "one short line (e.g. '3 years React experience')",
   "yearsExperience": 0,
   "skills": ["..."],
@@ -202,14 +202,35 @@ def resolve_bank_role(job_role: str):
     return (None, "none")
 
 
+# ─── EXPERIENCE LEVELS (4 tiers, 1:1 with the question-bank bands) ───────────
+# fresher 0–1 yr | junior 1–3 yr | mid 3–5 yr | senior 5+ yr
+LEVELS = ("fresher", "junior", "mid", "senior")
+_LEVEL_ALIASES = {
+    "fresher": "fresher", "entry": "fresher", "graduate": "fresher", "intern": "fresher",
+    "junior": "junior", "jr": "junior", "associate": "junior",
+    "mid": "mid", "intermediate": "mid", "middle": "mid", "mid-level": "mid", "midlevel": "mid",
+    "senior": "senior", "experienced": "senior", "lead": "senior",
+    "principal": "senior", "staff": "senior", "expert": "senior", "sr": "senior",
+}
+
+
+def _normalize_level(level: str) -> str:
+    """Map any level string (incl. legacy 'intermediate'/'experienced'/'lead') to one of the
+    4 canonical tiers: fresher | junior | mid | senior. Unknown/empty → 'mid'."""
+    return _LEVEL_ALIASES.get(str(level or "").strip().lower(), "mid")
+
+
 def parse_question_bank(job_role: str, level: str, num_questions: int) -> list:
+    lvl = _normalize_level(level)
+    # 1:1 map from the 4 canonical tiers to the bank's 4 experience bands.
     level_map = {
         "fresher": ["Fresher (0–1 year of experience)"],
-        "intermediate": ["Experienced (1–3 years of experience)", "Experienced (3–5 years of experience)"],
-        "experienced": ["Experienced (5+ years of experience)"]
+        "junior":  ["Experienced (1–3 years of experience)"],
+        "mid":     ["Experienced (3–5 years of experience)"],
+        "senior":  ["Experienced (5+ years of experience)"],
     }
-
-    target_levels = level_map.get(level.lower(), level_map["intermediate"])
+    target_levels = level_map.get(lvl, level_map["mid"])
+    _depth = {"fresher": "surface", "junior": "medium", "mid": "medium", "senior": "deep"}[lvl]
 
     try:
         with open("question_bank.md", "r", encoding="utf-8") as f:
@@ -256,7 +277,7 @@ def parse_question_bank(job_role: str, level: str, num_questions: int) -> list:
                     "question": q_text,
                     "topic": topic,
                     "question_type": "technical",
-                    "depth": "medium" if level == "intermediate" else ("surface" if level == "fresher" else "deep"),
+                    "depth": _depth,
                     "target_skill": topic,
                     "key_concepts": [topic]
                 })
@@ -412,8 +433,8 @@ def _intro_pool(level: str) -> list:
     """The static intro/closing pool. [0],[1] = opening; [2],[3] = closing. Slot [2] is the
     level-aware forward-looking closer (Leadership & Growth for experienced/senior/lead).
     Single source of truth — used by both generate_question_plan and build_static_plan."""
-    level = str(level or "fresher").lower()
-    is_senior_or_lead = level in ("experienced", "senior", "lead")
+    level = _normalize_level(level)
+    is_senior_or_lead = level == "senior"
     return [
         {
             "question": "To begin, could you please introduce yourself? Feel free to walk us through your educational background, professional experience, and anything else you'd like us to know.",
@@ -472,7 +493,7 @@ def build_static_plan(role: str, level: str, total_questions: int = 12, role_sou
     """The reusable, per-role-per-level STATIC portion (opening + technical + closing) with NO gap.
     Stored once per role card; each candidate's ~20% gap questions are merged in later via
     assemble_plan(). `gap_count` records how many gap slots to reserve for the candidate."""
-    level = str(level or "fresher").lower()
+    level = _normalize_level(level)
     total_questions = max(10, min(16, int(total_questions or 12)))
     intro_count = math.floor(0.3 * total_questions)
     gap_count = math.floor(0.2 * total_questions)
@@ -505,14 +526,14 @@ def assemble_plan(static: dict, gap_questions: list = None) -> list:
 def generate_question_plan(analysis: dict, role: str = None, jd_text: str = "", resume_text: str = "",
                            total_questions: int = 10, role_source: str = "bank", keys: dict = None) -> list:
     role = role or analysis.get("jobRole", "Software Engineer")
-    level = str(analysis.get("detectedLevel", "fresher") or "fresher").lower()
+    level = _normalize_level(analysis.get("detectedLevel") or "fresher")
 
     # Central 10-16 clamp so EVERY endpoint respects the meeting-length limit (US spec).
     total_questions = max(10, min(16, int(total_questions or 10)))
 
-    # "experienced" (5+ yrs) is our senior/lead tier; the upcoming HR experience-level UI may
-    # also pass an explicit "senior"/"lead" — both get the Leadership & Growth closing variant.
-    is_senior_or_lead = level in ("experienced", "senior", "lead")
+    # senior (5+ yrs) gets the Leadership & Growth closing; the other 3 tiers get the
+    # standard forward-looking career-goals closer.
+    is_senior_or_lead = level == "senior"
 
     intro_count = math.floor(0.3 * total_questions)
     gap_count = math.floor(0.2 * total_questions)

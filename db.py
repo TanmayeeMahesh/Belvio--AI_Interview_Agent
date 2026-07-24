@@ -65,21 +65,29 @@ def _exec(op, default=None, label="db"):
 
 def create_session(bot_id: str, total_questions: int,
                    candidate_name: str = None, candidate_email: str = None,
-                   role: str = None, status: str = "in_progress") -> str | None:
+                   role: str = None, status: str = "in_progress",
+                   candidate_id: str = None, organization_id: str = None) -> str | None:
     """
-    Create a candidate (minimal for now) + a session row. Returns session_id (uuid str) or None.
+    Create a session row. Returns session_id (uuid str) or None.
+    - candidate_id given (multi-tenant): link the pre-existing candidate (no new candidate row).
+    - candidate_id None (legacy): create a minimal candidate row first.
     status: 'in_progress' for live/manual starts; 'scheduled' when created at schedule time.
     """
     def op(db):
-        cand = db.table("candidates").insert({
-            "name": candidate_name, "email": candidate_email, "role": role,
-        }).execute()
-        candidate_id = cand.data[0]["id"]
-        sess = db.table("sessions").insert({
-            "candidate_id": candidate_id, "bot_id": bot_id,
+        cid = candidate_id
+        if not cid:
+            cand = db.table("candidates").insert({
+                "name": candidate_name, "email": candidate_email, "role": role,
+            }).execute()
+            cid = cand.data[0]["id"]
+        sess_row = {
+            "candidate_id": cid, "bot_id": bot_id,
             "status": status, "total_questions": total_questions,
             "started_at": _now(),
-        }).execute()
+        }
+        if organization_id:
+            sess_row["organization_id"] = organization_id
+        sess = db.table("sessions").insert(sess_row).execute()
         sid = sess.data[0]["id"]
         print(f"[DB]  session created → {sid} ({status})")
         return sid
@@ -210,14 +218,22 @@ def get_bot_id_for_session(session_id: str) -> str | None:
 # ─── SCHEDULED INTERVIEWS (robust, survives restarts) ─────
 def create_scheduled_interview(meeting_url: str, scheduled_for_iso: str,
                                candidate_email: str = None, candidate_name: str = None,
-                               role: str = None, session_id: str = None) -> dict | None:
-    """Insert a scheduled-interview row. Returns the row (with id) or None."""
+                               role: str = None, session_id: str = None,
+                               organization_id: str = None, candidate_id: str = None) -> dict | None:
+    """Insert a scheduled-interview row. Returns the row (with id) or None.
+    organization_id/candidate_id are set by the multi-tenant flow; omitted (None) by the
+    legacy single-tenant /api/schedule path."""
     def op(db):
-        res = db.table("scheduled_interviews").insert({
+        row_in = {
             "meeting_url": meeting_url, "scheduled_for": scheduled_for_iso,
             "candidate_email": candidate_email, "candidate_name": candidate_name,
             "role": role, "status": "scheduled", "session_id": session_id,
-        }).execute()
+        }
+        if organization_id:
+            row_in["organization_id"] = organization_id
+        if candidate_id:
+            row_in["candidate_id"] = candidate_id
+        res = db.table("scheduled_interviews").insert(row_in).execute()
         row = res.data[0]
         print(f"[DB]  scheduled interview {row['id']} for {scheduled_for_iso}")
         return row
@@ -346,6 +362,26 @@ def add_organization_user(organization_id: str, role: str, email: str = None,
     return _exec(op, default=None, label="add_organization_user")
 
 
+def create_auth_user(email: str, password: str) -> dict:
+    """Create a Supabase Auth login (the actual credential) via the admin API — needs the
+    service_role key (our SUPABASE_KEY). Auto-confirms the email so they can log in immediately.
+    Raises RuntimeError with the provider message on failure (e.g. 'email already registered')."""
+    db = _db()
+    if not db:
+        raise RuntimeError("Auth backend unavailable.")
+    try:
+        res = db.auth.admin.create_user({
+            "email": email, "password": password, "email_confirm": True,
+        })
+    except Exception as e:
+        raise RuntimeError(str(e))
+    u = getattr(res, "user", None) or res
+    uid = getattr(u, "id", None)
+    if not uid:
+        raise RuntimeError("Auth user was not created.")
+    return {"id": uid, "email": getattr(u, "email", email)}
+
+
 def list_org_users(organization_id: str, role: str = None) -> list:
     def op(db):
         q = db.table("organization_users").select("*").eq("organization_id", organization_id)
@@ -353,6 +389,226 @@ def list_org_users(organization_id: str, role: str = None) -> list:
             q = q.eq("role", role)
         return q.order("created_at", desc=True).execute().data or []
     return _exec(op, default=[], label="list_org_users")
+
+
+def get_membership_by_email(email: str) -> dict | None:
+    """Look up a membership row by email (for the invite → registration flow). Case-insensitive."""
+    if not email:
+        return None
+    def op(db):
+        res = (db.table("organization_users").select("*")
+               .ilike("email", email).limit(1).execute())
+        return res.data[0] if res.data else None
+    return _exec(op, default=None, label="get_membership_by_email")
+
+
+def activate_membership(row_id: str, user_id: str) -> dict | None:
+    """Attach the freshly-created Auth user_id to a PENDING invite row and flip it ACTIVE
+    (called when an invited user completes registration)."""
+    def op(db):
+        res = (db.table("organization_users")
+               .update({"user_id": user_id, "status": "ACTIVE"})
+               .eq("id", row_id).execute())
+        return res.data[0] if res.data else None
+    return _exec(op, default=None, label="activate_membership")
+
+
+def update_org_user(row_id: str, **fields) -> dict | None:
+    """Patch a membership row (name/role/status). Used by org-admin user management."""
+    if not row_id or not fields:
+        return None
+    def op(db):
+        res = db.table("organization_users").update(fields).eq("id", row_id).execute()
+        return res.data[0] if res.data else None
+    return _exec(op, default=None, label="update_org_user")
+
+
+def delete_org_user(row_id: str) -> bool:
+    def op(db):
+        db.table("organization_users").delete().eq("id", row_id).execute()
+        return True
+    return _exec(op, default=False, label="delete_org_user")
+
+
+def get_organization(org_id: str) -> dict | None:
+    if not org_id:
+        return None
+    def op(db):
+        res = db.table("organizations").select("*").eq("id", org_id).limit(1).execute()
+        return res.data[0] if res.data else None
+    return _exec(op, default=None, label="get_organization")
+
+
+def update_organization(org_id: str, **fields) -> dict | None:
+    """Patch an org row (e.g. name, email_template)."""
+    if not org_id or not fields:
+        return None
+    def op(db):
+        res = db.table("organizations").update(fields).eq("id", org_id).execute()
+        return res.data[0] if res.data else None
+    return _exec(op, default=None, label="update_organization")
+
+
+def delete_organization(org_id: str) -> bool:
+    def op(db):
+        db.table("organizations").delete().eq("id", org_id).execute()
+        return True
+    return _exec(op, default=False, label="delete_organization")
+
+
+def count_rows(table: str, **eq) -> int:
+    """Exact row count for a table with optional equality filters (dashboard tiles)."""
+    def op(db):
+        q = db.table(table).select("id", count="exact")
+        for k, v in eq.items():
+            q = q.eq(k, v)
+        res = q.execute()
+        return res.count or 0
+    return _exec(op, default=0, label=f"count_{table}")
+
+
+# ─── JOB OPENINGS (multi-tenant role cards: JD uploaded once, 4-level question_sets) ──
+def create_job_opening(organization_id: str, title: str, description: str, jd_text: str,
+                       jd_analysis: dict, question_sets: dict, role_source: str = "bank",
+                       question_count: int = 12, status: str = "open") -> dict | None:
+    """Insert a job opening (role card). Stores the JD + the 80% static question set per level."""
+    def op(db):
+        res = db.table("job_openings").insert({
+            "organization_id": organization_id, "title": title, "description": description,
+            "jd_text": jd_text, "jd_analysis": jd_analysis, "question_sets": question_sets,
+            "role_source": role_source, "question_count": question_count, "status": status,
+        }).execute()
+        row = res.data[0]
+        print(f"[DB]  job_opening {row['id']} — {title}")
+        return row
+    return _exec(op, default=None, label="create_job_opening")
+
+
+def list_job_openings(organization_id: str) -> list:
+    """Job openings for an org, newest first (light columns for the grid)."""
+    if not organization_id:
+        return []
+    def op(db):
+        res = (db.table("job_openings")
+               .select("id,title,description,status,role_source,question_count,created_at")
+               .eq("organization_id", organization_id).order("created_at", desc=True).execute())
+        return res.data or []
+    return _exec(op, default=[], label="list_job_openings")
+
+
+def get_job_opening(job_id: str, organization_id: str = None) -> dict | None:
+    """Full job opening (incl. jd_text + question_sets). Scoped to org when provided (tenant safety)."""
+    if not job_id:
+        return None
+    def op(db):
+        q = db.table("job_openings").select("*").eq("id", job_id)
+        if organization_id:
+            q = q.eq("organization_id", organization_id)
+        res = q.limit(1).execute()
+        return res.data[0] if res.data else None
+    return _exec(op, default=None, label="get_job_opening")
+
+
+def delete_job_opening(job_id: str, organization_id: str = None) -> bool:
+    def op(db):
+        q = db.table("job_openings").delete().eq("id", job_id)
+        if organization_id:
+            q = q.eq("organization_id", organization_id)
+        q.execute()
+        return True
+    return _exec(op, default=False, label="delete_job_opening")
+
+
+# ─── CANDIDATES (multi-tenant: resume uploaded against a job opening) ─────────
+def create_candidate_full(organization_id: str, job_opening_id: str, name: str, email: str,
+                          role: str, resume_text: str, analysis: dict) -> dict | None:
+    """Insert a candidate with their parsed resume + JD-match analysis (JSON)."""
+    def op(db):
+        res = db.table("candidates").insert({
+            "organization_id": organization_id, "job_opening_id": job_opening_id,
+            "name": name, "email": email, "role": role,
+            "resume_text": resume_text, "analysis": analysis,
+        }).execute()
+        row = res.data[0]
+        print(f"[DB]  candidate {row['id']} — {name} ({email})")
+        return row
+    return _exec(op, default=None, label="create_candidate_full")
+
+
+def list_candidates(organization_id: str, job_opening_id: str = None) -> list:
+    """Candidates for an org (optionally one job opening), newest first."""
+    if not organization_id:
+        return []
+    def op(db):
+        q = db.table("candidates").select("*").eq("organization_id", organization_id)
+        if job_opening_id:
+            q = q.eq("job_opening_id", job_opening_id)
+        return q.order("created_at", desc=True).execute().data or []
+    return _exec(op, default=[], label="list_candidates")
+
+
+def get_candidate(cand_id: str, organization_id: str = None) -> dict | None:
+    if not cand_id:
+        return None
+    def op(db):
+        q = db.table("candidates").select("*").eq("id", cand_id)
+        if organization_id:
+            q = q.eq("organization_id", organization_id)
+        res = q.limit(1).execute()
+        return res.data[0] if res.data else None
+    return _exec(op, default=None, label="get_candidate")
+
+
+def candidate_scheduled_map(candidate_ids: list) -> dict:
+    """Map candidate_id -> its latest scheduled_interview row, for the ones that have one.
+    Lets the candidates list mark is_scheduled / scheduled_time without an N+1 query."""
+    if not candidate_ids:
+        return {}
+    def op(db):
+        res = (db.table("scheduled_interviews").select("*")
+               .in_("candidate_id", candidate_ids).execute())
+        out = {}
+        for r in (res.data or []):
+            cid = r.get("candidate_id")
+            if cid:
+                out[cid] = r   # last one wins (fine — one interview per candidate is enforced)
+        return out
+    return _exec(op, default={}, label="candidate_scheduled_map")
+
+
+def sessions_status_map(session_ids: list) -> dict:
+    """Map session_id -> live status (the Interviews table shows the real interview state,
+    which lives on the session, not the scheduled_interviews row)."""
+    ids = [s for s in (session_ids or []) if s]
+    if not ids:
+        return {}
+    def op(db):
+        res = db.table("sessions").select("id,status").in_("id", ids).execute()
+        return {r["id"]: r.get("status") for r in (res.data or [])}
+    return _exec(op, default={}, label="sessions_status_map")
+
+
+def candidate_has_interview(candidate_id: str) -> bool:
+    """True if this candidate already has a scheduled interview (one-per-candidate guard)."""
+    if not candidate_id:
+        return False
+    def op(db):
+        res = (db.table("scheduled_interviews").select("id")
+               .eq("candidate_id", candidate_id).limit(1).execute())
+        return bool(res.data)
+    return _exec(op, default=False, label="candidate_has_interview")
+
+
+def list_org_interviews(organization_id: str, limit: int = 200) -> list:
+    """All scheduled interviews for an org, newest first (Interviews table + dashboards)."""
+    if not organization_id:
+        return []
+    def op(db):
+        res = (db.table("scheduled_interviews").select("*")
+               .eq("organization_id", organization_id)
+               .order("created_at", desc=True).limit(limit).execute())
+        return res.data or []
+    return _exec(op, default=[], label="list_org_interviews")
 
 
 def update_scheduled_interview(row_id: str, **fields) -> None:
