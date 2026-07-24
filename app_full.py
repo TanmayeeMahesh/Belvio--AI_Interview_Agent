@@ -45,6 +45,9 @@ SARVAM_LANG    = os.getenv("SARVAM_LANG", "en-IN")
 
 # ─── Proctoring (post-interview integrity). Instant off-switch: PROCTORING_ENABLED=false ──
 PROCTORING_ENABLED = os.getenv("PROCTORING_ENABLED", "true").lower() == "true"
+# Gate the DB-mutating background workers. Set false on any instance that SHARES another instance's
+# Supabase/Recall (e.g. staging) so the two schedulers don't both deploy a bot for the same interview.
+SCHEDULER_ENABLED  = os.getenv("SCHEDULER_ENABLED", "true").lower() == "true"
 
 BOT_NAME    = "AI Interviewer (Sandbox)"
 RECALL_BASE = f"https://{os.getenv('RECALL_REGION', 'ap-northeast-1')}.recall.ai/api/v1"
@@ -725,6 +728,11 @@ def scheduler_worker():
     while True:
         try:
             for row in db.due_scheduled_interviews():
+                # Atomic claim first: flip 'scheduled' -> 'launching'. If another instance sharing
+                # this DB already claimed it, skip — this is what prevents two bots in one meeting.
+                if not db.claim_scheduled_interview(row["id"]):
+                    print(f"⏭️  {row['id']} already claimed by another worker — skipping")
+                    continue
                 print(f"🗓️  launching scheduled interview {row['id']}")
                 result = deploy_bot(row["meeting_url"], session_id=row.get("session_id"))
                 if result.get("status") == "deployed":
@@ -773,8 +781,20 @@ def stuck_session_cleaner():
 
 @app.on_event("startup")
 def _start_scheduler():
-    threading.Thread(target=scheduler_worker, daemon=True).start()
-    threading.Thread(target=stuck_session_cleaner, daemon=True).start()
+    # DB-mutating workers (deploy bots, close/expire sessions). Skipped when SCHEDULER_ENABLED=false
+    # so a shared-backend instance (e.g. staging) doesn't compete with prod over the same rows.
+    if SCHEDULER_ENABLED:
+        threading.Thread(target=scheduler_worker, daemon=True).start()
+        threading.Thread(target=stuck_session_cleaner, daemon=True).start()
+    else:
+        print("⏸️  SCHEDULER_ENABLED=false — scheduler + stuck-session cleaner NOT started")
+    # Warm the fine-tuned gap-question model in the background (downloads from the private HF
+    # repo on first cloud boot, then cached). Never blocks startup or fails the app.
+    try:
+        import extraction
+        extraction.prewarm_gap_model()
+    except Exception as e:
+        print(f"⚠️ gap model prewarm skipped: {e}")
 
 
 # ─── DEPLOY ───────────────────────────────────────────────

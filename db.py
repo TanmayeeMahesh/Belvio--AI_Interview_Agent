@@ -244,6 +244,20 @@ def due_scheduled_interviews() -> list:
     return _exec(op, default=[], label="due_scheduled_interviews")
 
 
+def claim_scheduled_interview(row_id: str) -> bool:
+    """Atomically claim a due row for launch: flip 'scheduled' -> 'launching' ONLY if it is still
+    'scheduled'. Returns True only for the caller that won the claim, so multiple schedulers sharing
+    this database can never both deploy a bot for the same interview (Postgres serializes the update;
+    the loser's WHERE no longer matches and affects 0 rows)."""
+    if not row_id:
+        return False
+    def op(db):
+        res = (db.table("scheduled_interviews").update({"status": "launching"})
+               .eq("id", row_id).eq("status", "scheduled").execute())
+        return bool(res.data)
+    return _exec(op, default=False, label="claim_scheduled_interview")
+
+
 def update_scheduled_interview(row_id: str, **fields) -> None:
     """Patch a scheduled-interview row (status, bot_id, email_sent, ...)."""
     if not row_id:

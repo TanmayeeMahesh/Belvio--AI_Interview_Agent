@@ -17,6 +17,12 @@ models/
 *.pyd
 .Python
 
+# Fine-tuned gap-question model — hosted on a private HF model repo, downloaded at boot. NEVER commit (~990 MB).
+flan_t5_finetuned_frozen_encoder_local_save/
+flan_t5_finetuned_local_save/
+*.safetensors
+*.zip
+
 # Uploads (PDFs, reports)
 uploads/
 *.pdf

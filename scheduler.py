@@ -14,7 +14,7 @@ SendGrid setup (5 min, free, no domain required):
        SENDGRID_API_KEY=SG.xxxx...
        SENDGRID_FROM_EMAIL=yourname@gmail.com   ← must match the address you verified above
 """
-import os, smtplib, ssl, requests as _http
+import os, re, smtplib, ssl, requests as _http
 from email.message import EmailMessage
 from dotenv import load_dotenv
 
@@ -25,6 +25,23 @@ SENDGRID_FROM_EMAIL = os.getenv("SENDGRID_FROM_EMAIL", "")
 
 GMAIL_ADDRESS      = os.getenv("GMAIL_ADDRESS")
 GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
+
+
+# ─── Meeting-link validation (only platforms the interview bot / Recall.ai can join) ──
+SUPPORTED_MEETING_PLATFORMS = "Zoom, Google Meet, or Microsoft Teams"
+_MEETING_URL_RE = re.compile(
+    r'^https?://('
+    r'([\w-]+\.)?zoom\.us/|'                   # Zoom
+    r'meet\.google\.com/|'                     # Google Meet
+    r'teams\.(microsoft|live)\.com/|'          # Microsoft Teams
+    r'([\w-]+\.)?webex\.com/'                   # Webex
+    r')', re.IGNORECASE)
+
+
+def is_supported_meeting_url(url: str) -> bool:
+    """True only for a meeting link the bot can actually join (Zoom / Google Meet / Teams / Webex).
+    A YouTube or other random URL returns False so we can reject it before scheduling."""
+    return bool(_MEETING_URL_RE.match((url or "").strip()))
 
 
 def _build_body(candidate_name, role, meeting_url, when):

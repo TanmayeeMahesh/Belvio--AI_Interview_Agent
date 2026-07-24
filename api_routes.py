@@ -112,6 +112,13 @@ async def analyse(resume: UploadFile = File(None), jd: UploadFile = File(None),
     return {"analysis": analysis, "tempFiles": temp}
 
 
+# ─── stored question-bank roles (populate the HR role dropdown) ──
+@router.get("/api/roles")
+async def roles(authorization: str = Header(None)):
+    _require_user(authorization)
+    return {"roles": extraction.list_bank_roles()}
+
+
 # ─── US-AG-02 preview: generate the question plan for HR review (no DB writes) ──
 @router.post("/api/generate-questions")
 async def generate_questions(request: Request, authorization: str = Header(None)):
@@ -123,12 +130,36 @@ async def generate_questions(request: Request, authorization: str = Header(None)
     analysis = body.get("analysis", {})
     role     = body.get("role") or analysis.get("jobRole", "Software Engineer")
     qcount   = int(body.get("questionCount", 12))
+    role_source = body.get("roleSource", "bank")
+    temp     = body.get("tempFiles", {})
+    jd_text  = temp.get("jd_text", "")
+    resume_text = temp.get("resume_text", "")
     try:
-        questions = extraction.generate_question_plan(analysis, role, qcount, keys=keys)
+        questions = extraction.generate_question_plan(
+            analysis, role, jd_text=jd_text, resume_text=resume_text,
+            total_questions=qcount, role_source=role_source, keys=keys)
     except extraction.llm_stack.LLMExhausted as e:
         raise HTTPException(status_code=429,
                             detail={"error": "llm_exhausted", "providers": e.providers_tried})
-    return {"questions": questions}
+    # tell the UI how an "Other" role was resolved (so it can show "matched X → Y")
+    role_info = None
+    if role_source == "match":
+        resolved, method = extraction.resolve_bank_role(role)
+        if not resolved:
+            fb = extraction.list_bank_roles()
+            resolved, method = (fb[0] if fb else role), "fallback"
+        role_info = {"requested": role, "resolved": resolved, "method": method}
+    # warn (non-blocking) if HR's chosen role contradicts the role detected from the documents
+    role_mismatch = None
+    detected = (analysis.get("jobRole") or "").strip()
+    if detected:
+        sel_c, _ = extraction.resolve_bank_role(role)
+        det_c, _ = extraction.resolve_bank_role(detected)
+        sel = (sel_c or role).strip().lower()
+        det = (det_c or detected).strip().lower()
+        if sel and det and sel != det:
+            role_mismatch = {"selected": role, "detected": detected}
+    return {"questions": questions, "roleInfo": role_info, "roleMismatch": role_mismatch}
 
 
 # ─── US-AG-02 + scheduling: generate questions, store, email, schedule bot ──
@@ -142,6 +173,7 @@ async def schedule(request: Request, authorization: str = Header(None)):
     analysis      = body.get("analysis", {})
     role          = body.get("role") or analysis.get("jobRole", "Software Engineer")
     qcount        = int(body.get("questionCount", 12))
+    role_source   = body.get("roleSource", "bank")
     email         = (body.get("confirmedEmail") or analysis.get("candidateEmail") or "").strip()
     meeting_url   = (body.get("manualMeetingLink") or "").strip()
     temp          = body.get("tempFiles", {})
@@ -149,12 +181,20 @@ async def schedule(request: Request, authorization: str = Header(None)):
 
     if not meeting_url:
         raise HTTPException(status_code=400, detail="A meeting link is required.")
+    if not scheduler.is_supported_meeting_url(meeting_url):
+        raise HTTPException(status_code=400, detail=(
+            f"That doesn't look like a supported meeting link. Please paste a "
+            f"{scheduler.SUPPORTED_MEETING_PLATFORMS} link — the interview bot can't join a "
+            f"YouTube or other link."))
 
     # 1. use the HR-reviewed plan if provided, else generate one (backward-compatible)
     questions = _sanitize_questions(body.get("questions"))
     if not questions:
         try:
-            questions = extraction.generate_question_plan(analysis, role, qcount, keys=keys)
+            questions = extraction.generate_question_plan(
+                analysis, role,
+                jd_text=temp.get("jd_text", ""), resume_text=temp.get("resume_text", ""),
+                total_questions=qcount, role_source=role_source, keys=keys)
         except extraction.llm_stack.LLMExhausted as e:
             raise HTTPException(status_code=429,
                                 detail={"error": "llm_exhausted", "providers": e.providers_tried})
