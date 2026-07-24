@@ -74,6 +74,15 @@ def _require_role(authorization, *roles):
     return user, m
 
 
+def _org_of(m) -> str:
+    """The caller's organization_id, or 400 if their account isn't linked to an org.
+    Guards the multi-tenant write/read paths against orphaning rows under a null tenant."""
+    org = m.get("organization_id")
+    if not org:
+        raise HTTPException(status_code=400, detail="Your account is not linked to an organization.")
+    return org
+
+
 def _sanitize_questions(raw):
     """Normalise an HR-reviewed question list (LLM items keep their fields; HR-added items get
     sensible defaults) into the shape db.save_questions / the interview engine expect."""
@@ -172,6 +181,27 @@ async def admin_delete_organization(org_id: str, authorization: str = Header(Non
     return {"status": "deleted", "id": org_id}
 
 
+@router.post("/api/admin/organizations/{org_id}/invite-admin")
+async def admin_invite_org_admin(org_id: str, request: Request, authorization: str = Header(None)):
+    """SUPER_ADMIN: seed an ORG_ADMIN (PENDING) for an existing org. Closes the bootstrap gap so an
+    org has an admin who can log in (they set a password on first login) without a dashboard visit."""
+    _require_role(authorization, "SUPER_ADMIN")
+    body = await request.json()
+    email = (body.get("email") or "").strip().lower()
+    name  = (body.get("name") or "").strip() or None
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required.")
+    if not db.get_organization(org_id):
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    if db.get_membership_by_email(email):
+        raise HTTPException(status_code=409, detail="A user with this email already exists.")
+    row = db.add_organization_user(org_id, "ORG_ADMIN", email=email, name=name, status="PENDING")
+    if not row:
+        raise HTTPException(status_code=500, detail="Could not create the invitation.")
+    return {"user": {"id": row["id"], "email": email, "name": name,
+                     "role": "ORG_ADMIN", "status": "PENDING"}}
+
+
 # ─── REGISTRATION / INVITE FLOW ──────────────────────────
 # Every user is pre-seeded as a PENDING organization_users row (by a super-admin creating an org,
 # or an org-admin adding an HR). On first login they set a password → we create their Supabase
@@ -232,7 +262,7 @@ def dashboard_super_admin(authorization: str = Header(None)):
 @router.get("/api/dashboard/org-admin")
 def dashboard_org_admin(authorization: str = Header(None)):
     _, m = _require_role(authorization, "ORG_ADMIN", "SUPER_ADMIN")
-    org = m["organization_id"]
+    org = _org_of(m)
     return {
         "hrs": db.count_rows("organization_users", organization_id=org, role="HR"),
         "job_openings": db.count_rows("job_openings", organization_id=org),
@@ -244,7 +274,7 @@ def dashboard_org_admin(authorization: str = Header(None)):
 @router.get("/api/dashboard/hr")
 def dashboard_hr(authorization: str = Header(None)):
     _, m = _require_role(authorization, "HR", "ORG_ADMIN", "SUPER_ADMIN")
-    org = m["organization_id"]
+    org = _org_of(m)
     return {
         "total_jobs": db.count_rows("job_openings", organization_id=org),
         "total_candidates": db.count_rows("candidates", organization_id=org),
@@ -325,7 +355,7 @@ async def create_job_opening(title: str = Form(...), description: str = Form("")
     user, m = _require_role(authorization, "HR", "ORG_ADMIN", "SUPER_ADMIN")
     uid = auth.user_id_from(user)
     keys = auth.get_user_keys_decrypted(uid)
-    org = m["organization_id"]
+    org = _org_of(m)
 
     jd_bytes, jd_text = None, ""
     if jd_file:
@@ -368,7 +398,10 @@ async def create_job_opening(title: str = Form(...), description: str = Form("")
 @router.delete("/api/job-openings/{job_id}")
 def delete_job_opening(job_id: str, authorization: str = Header(None)):
     _, m = _require_role(authorization, "HR", "ORG_ADMIN", "SUPER_ADMIN")
-    db.delete_job_opening(job_id, m["organization_id"])
+    org = _org_of(m)
+    if not db.get_job_opening(job_id, org):
+        raise HTTPException(status_code=404, detail="Job opening not found.")
+    db.delete_job_opening(job_id, org)
     return {"status": "deleted", "id": job_id}
 
 
@@ -384,7 +417,10 @@ def _candidate_dto(c: dict, sched: dict) -> dict:
 @router.get("/api/job-openings/{job_id}/candidates")
 def job_opening_candidates(job_id: str, authorization: str = Header(None)):
     _, m = _require_membership(authorization)
-    cands = db.list_candidates(m["organization_id"], job_opening_id=job_id)
+    org = _org_of(m)
+    if not db.get_job_opening(job_id, org):
+        raise HTTPException(status_code=404, detail="Job opening not found.")
+    cands = db.list_candidates(org, job_opening_id=job_id)
     sched = db.candidate_scheduled_map([c["id"] for c in cands])
     return [_candidate_dto(c, sched) for c in cands]
 
@@ -392,7 +428,10 @@ def job_opening_candidates(job_id: str, authorization: str = Header(None)):
 @router.get("/api/job-openings/{job_id}/stats")
 def job_opening_stats(job_id: str, authorization: str = Header(None)):
     _, m = _require_membership(authorization)
-    cands = db.list_candidates(m["organization_id"], job_opening_id=job_id)
+    org = _org_of(m)
+    if not db.get_job_opening(job_id, org):
+        raise HTTPException(status_code=404, detail="Job opening not found.")
+    cands = db.list_candidates(org, job_opening_id=job_id)
     ids = [c["id"] for c in cands]
     sched = db.candidate_scheduled_map(ids)
     sess_status = db.sessions_status_map([s.get("session_id") for s in sched.values()])
@@ -429,7 +468,7 @@ async def upload_candidate(resume: UploadFile = File(...), job_opening_id: str =
     user, m = _require_role(authorization, "HR", "ORG_ADMIN", "SUPER_ADMIN")
     uid = auth.user_id_from(user)
     keys = auth.get_user_keys_decrypted(uid)
-    org = m["organization_id"]
+    org = _org_of(m)
 
     job = db.get_job_opening(job_opening_id, org)
     if not job:
@@ -472,7 +511,7 @@ async def schedule_candidate(cand_id: str, request: Request, authorization: str 
     user, m = _require_role(authorization, "HR", "ORG_ADMIN", "SUPER_ADMIN")
     uid = auth.user_id_from(user)
     keys = auth.get_user_keys_decrypted(uid)
-    org = m["organization_id"]
+    org = _org_of(m)
 
     cand = db.get_candidate(cand_id, org)
     if not cand:
@@ -539,7 +578,7 @@ async def schedule_candidate(cand_id: str, request: Request, authorization: str 
 @router.get("/api/interviews")
 def list_interviews(authorization: str = Header(None)):
     _, m = _require_membership(authorization)
-    org = m["organization_id"]
+    org = _org_of(m)
     rows = db.list_org_interviews(org)
     sess_status = db.sessions_status_map([r.get("session_id") for r in rows])
     # attach each candidate's detectedLevel (UI shows it); one batched read, not N+1
