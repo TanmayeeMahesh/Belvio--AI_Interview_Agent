@@ -54,6 +54,23 @@ def _require_user(authorization):
         raise HTTPException(status_code=401, detail=str(e))
 
 
+def _require_membership(authorization):
+    """Authenticated user + their org/role membership (403 if they belong to no org)."""
+    user = _require_user(authorization)
+    m = db.get_user_membership(auth.user_id_from(user))
+    if not m:
+        raise HTTPException(status_code=403, detail="No organization membership for this user.")
+    return user, m
+
+
+def _require_role(authorization, *roles):
+    """Authenticated user whose role is one of `roles` (403 otherwise). Roles: SUPER_ADMIN/ORG_ADMIN/HR."""
+    user, m = _require_membership(authorization)
+    if m.get("role") not in roles:
+        raise HTTPException(status_code=403, detail="You don't have permission for this action.")
+    return user, m
+
+
 def _sanitize_questions(raw):
     """Normalise an HR-reviewed question list (LLM items keep their fields; HR-added items get
     sensible defaults) into the shape db.save_questions / the interview engine expect."""
@@ -75,6 +92,38 @@ def _sanitize_questions(raw):
             "key_concepts": q.get("key_concepts") or [],
         })
     return clean
+
+
+# ─── RBAC: who am I (frontend routes by role) + SUPER_ADMIN org management ──
+@router.get("/api/whoami")
+async def whoami(authorization: str = Header(None)):
+    user = _require_user(authorization)
+    m = db.get_user_membership(auth.user_id_from(user)) or {}
+    return {"email": user.get("email") if isinstance(user, dict) else getattr(user, "email", None),
+            "role": m.get("role"), "organization_id": m.get("organization_id"),
+            "organization_name": m.get("organization_name")}
+
+
+@router.get("/api/admin/organizations")
+async def admin_list_organizations(authorization: str = Header(None)):
+    _require_role(authorization, "SUPER_ADMIN")
+    return {"organizations": db.list_organizations()}
+
+
+@router.post("/api/admin/create-organization")
+async def admin_create_organization(request: Request, authorization: str = Header(None)):
+    _require_role(authorization, "SUPER_ADMIN")
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Organization name is required.")
+    org = db.create_organization(name)
+    if not org:
+        raise HTTPException(status_code=500, detail="Could not create organization.")
+    admin_email = (body.get("adminEmail") or "").strip()
+    if admin_email:  # seed the org's first admin (PENDING until they register)
+        db.add_organization_user(org["id"], "ORG_ADMIN", email=admin_email, status="PENDING")
+    return {"organization": org}
 
 
 # ─── US-AG-01: upload + parse JD/resume ───────────────────

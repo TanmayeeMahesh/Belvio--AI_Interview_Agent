@@ -287,7 +287,9 @@ def list_job_roles(owner_id: str) -> list:
 
 
 def get_job_role(role_id: str, owner_id: str = None) -> dict | None:
-    """Full role card (incl. jd_text + question_sets). Scoped to owner_id when provided."""
+    """Full role card (incl. jd_text + question_sets). Scoped to owner_id when provided.
+    NOTE: superseded by the job_openings-based role cards (multi-tenant) — kept for the
+    single-tenant fallback until the job_openings migration lands."""
     if not role_id:
         return None
     def op(db):
@@ -297,6 +299,60 @@ def get_job_role(role_id: str, owner_id: str = None) -> dict | None:
         res = q.limit(1).execute()
         return res.data[0] if res.data else None
     return _exec(op, default=None, label="get_job_role")
+
+
+# ─── ORGANIZATIONS / RBAC (multi-tenant: SUPER_ADMIN → ORG_ADMIN → HR) ──────────
+def get_user_membership(user_id: str) -> dict | None:
+    """Resolve a user's org + role from organization_users (joined to the org name).
+    Returns {..., organization_id, role, organization_name} or None if the user has no membership."""
+    if not user_id:
+        return None
+    def op(db):
+        res = (db.table("organization_users").select("*")
+               .eq("user_id", user_id).limit(1).execute())
+        row = res.data[0] if res.data else None
+        if not row:
+            return None
+        org = (db.table("organizations").select("name")
+               .eq("id", row["organization_id"]).limit(1).execute())
+        row["organization_name"] = org.data[0]["name"] if org.data else None
+        return row
+    return _exec(op, default=None, label="get_user_membership")
+
+
+def create_organization(name: str) -> dict | None:
+    def op(db):
+        res = db.table("organizations").insert({"name": name, "status": "active"}).execute()
+        return res.data[0] if res.data else None
+    return _exec(op, default=None, label="create_organization")
+
+
+def list_organizations() -> list:
+    def op(db):
+        res = db.table("organizations").select("*").order("created_at", desc=True).execute()
+        return res.data or []
+    return _exec(op, default=[], label="list_organizations")
+
+
+def add_organization_user(organization_id: str, role: str, email: str = None,
+                          user_id: str = None, name: str = None, status: str = "PENDING") -> dict | None:
+    """Add an HR/OrgAdmin membership (status PENDING until they accept the invite and register)."""
+    def op(db):
+        res = db.table("organization_users").insert({
+            "organization_id": organization_id, "role": role, "email": email,
+            "user_id": user_id, "name": name, "status": status,
+        }).execute()
+        return res.data[0] if res.data else None
+    return _exec(op, default=None, label="add_organization_user")
+
+
+def list_org_users(organization_id: str, role: str = None) -> list:
+    def op(db):
+        q = db.table("organization_users").select("*").eq("organization_id", organization_id)
+        if role:
+            q = q.eq("role", role)
+        return q.order("created_at", desc=True).execute().data or []
+    return _exec(op, default=[], label="list_org_users")
 
 
 def update_scheduled_interview(row_id: str, **fields) -> None:
