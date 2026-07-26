@@ -119,7 +119,7 @@ async def whoami(authorization: str = Header(None)):
 @router.get("/api/admin/organizations")
 async def admin_list_organizations(authorization: str = Header(None)):
     _require_role(authorization, "SUPER_ADMIN")
-    return {"organizations": db.list_organizations()}
+    return db.list_organizations()   # bare array — the UI does orgs.map(...)
 
 
 @router.post("/api/admin/create-organization")
@@ -132,10 +132,18 @@ async def admin_create_organization(request: Request, authorization: str = Heade
     org = db.create_organization(name)
     if not org:
         raise HTTPException(status_code=500, detail="Could not create organization.")
-    admin_email = (body.get("adminEmail") or "").strip()
-    if admin_email:  # seed the org's first admin (PENDING until they register)
-        db.add_organization_user(org["id"], "ORG_ADMIN", email=admin_email, status="PENDING")
-    return {"organization": org}
+    # Optionally seed the org's first ORG_ADMIN in the same step (PENDING until they set a password).
+    admin_email = (body.get("adminEmail") or "").strip().lower()
+    admin_name  = (body.get("adminName") or "").strip() or None
+    admin = None
+    if admin_email:
+        if db.get_membership_by_email(admin_email):
+            admin = {"email": admin_email, "status": "exists"}   # don't duplicate an existing user
+        else:
+            row = db.add_organization_user(org["id"], "ORG_ADMIN", email=admin_email,
+                                           name=admin_name, status="PENDING")
+            admin = {"email": admin_email, "status": "PENDING"} if row else None
+    return {"organization": org, "admin": admin}
 
 
 @router.post("/api/admin/create-user")
@@ -320,6 +328,9 @@ def org_delete_hr(row_id: str, authorization: str = Header(None)):
     target = next((u for u in db.list_org_users(m["organization_id"]) if u["id"] == row_id), None)
     if not target:
         raise HTTPException(status_code=404, detail="User not found in your organization.")
+    # privilege guard: an ORG_ADMIN can't remove another admin / a super-admin (only SUPER_ADMIN can)
+    if target.get("role") in ("ORG_ADMIN", "SUPER_ADMIN") and m.get("role") != "SUPER_ADMIN":
+        raise HTTPException(status_code=403, detail="You can't remove an admin account.")
     db.delete_org_user(row_id)
     return {"status": "deleted", "id": row_id}
 
@@ -348,6 +359,7 @@ def list_job_openings(authorization: str = Header(None)):
 
 @router.post("/api/job-openings")
 async def create_job_opening(title: str = Form(...), description: str = Form(""),
+                             role: str = Form(""), roleSource: str = Form(""),
                              questionCount: int = Form(12), jd_file: UploadFile = File(None),
                              authorization: str = Header(None)):
     """Create a role card. The JD is uploaded here ONCE; we analyse it and pre-build the 80%
@@ -366,10 +378,24 @@ async def create_job_opening(title: str = Form(...), description: str = Form("")
         jd_text = extraction.extract_text(tmp)
         os.remove(tmp)
 
-    # resolve the title to a bank role; unknown roles fall back to LLM-generated technicals
-    resolved, _method = extraction.resolve_bank_role(title)
-    role_for_bank = resolved or title
-    role_source = "bank" if resolved else "llm"
+    # Role for the question bank: honour HR's explicit choice (dropdown, or "Other" → match|llm),
+    # else resolve from the title (bank if it matches a stored role, else LLM).
+    chosen_role = (role or "").strip() or title
+    src = (roleSource or "").strip().lower()
+    role_info = None
+    if src not in ("bank", "match", "llm"):
+        resolved, _m = extraction.resolve_bank_role(chosen_role)
+        role_source = "bank" if resolved else "llm"
+        role_for_bank = resolved or chosen_role
+    elif src == "match":
+        resolved, method = extraction.resolve_bank_role(chosen_role)
+        role_for_bank = resolved or chosen_role
+        role_source = "match"
+        if resolved and resolved.strip().lower() != chosen_role.strip().lower():
+            role_info = {"requested": chosen_role, "resolved": resolved, "method": method}
+    else:   # 'bank' (exact stored role) or 'llm' (generate with AI) — use as given
+        role_for_bank = chosen_role
+        role_source = src
 
     jd_analysis = {}
     if jd_text:
@@ -379,20 +405,20 @@ async def create_job_opening(title: str = Form(...), description: str = Form("")
             jd_analysis = {}   # non-fatal: card still usable, gap analysis just won't have JD context
 
     qc = max(10, min(16, int(questionCount or 12)))
-    question_sets = {
-        lvl: extraction.build_static_plan(role_for_bank, lvl, qc, role_source,
-                                          analysis=jd_analysis, jd_text=jd_text, keys=keys)
-        for lvl in extraction.LEVELS   # fresher | junior | mid | senior
-    }
+    # Per-level static sets are NOT pre-built here anymore: each candidate's plan is generated at
+    # review time via the v2.1.0 engine (generate_question_plan), reusing this card's role/
+    # role_source + JD. Skipping the 4x build keeps job creation instant and dodges LLM timeouts
+    # for 'llm'-source roles. (role_for_bank is still resolved above for role_source detection.)
     row = db.create_job_opening(org, title, description, jd_text, jd_analysis,
-                                question_sets, role_source, qc)
+                                {}, role_source, qc)
     if not row:
         raise HTTPException(status_code=500, detail="Could not create the job opening.")
     if jd_bytes:   # keep the JD PDF on disk for the preview iframe, keyed by opening id
         with open(os.path.join(JD_DIR, f"{row['id']}.pdf"), "wb") as f:
             f.write(jd_bytes)
     return {"id": row["id"], "title": title, "description": description,
-            "status": row.get("status", "open"), "role_source": role_source, "question_count": qc}
+            "status": row.get("status", "open"), "role_source": role_source,
+            "question_count": qc, "roleInfo": role_info}
 
 
 @router.delete("/api/job-openings/{job_id}")
@@ -503,11 +529,54 @@ async def upload_candidate(resume: UploadFile = File(...), job_opening_id: str =
                           "role": title, "job_opening_id": job_opening_id}}
 
 
+def _candidate_plan(cand: dict, job: dict, qc: int, keys: dict) -> dict:
+    """Build a candidate's question plan via the EXACT v2.1.0 engine (generate_question_plan):
+    opening → technical → gap → closing, always filling to `qc` — technical backfills any gap
+    shortfall (so a plan is never short when the gap model returns fewer than reserved). JD comes
+    from the role card (uploaded once); resume + analysis from the candidate. Pure — no DB writes."""
+    job = job or {}
+    analysis = cand.get("analysis") or {}
+    role = cand.get("role") or job.get("title") or analysis.get("jobRole") or "Software Engineer"
+    role_source = job.get("role_source") or "bank"
+    jd_text = job.get("jd_text") or ""
+    resume_text = cand.get("resume_text") or ""
+    questions = extraction.generate_question_plan(
+        analysis, role, jd_text=jd_text, resume_text=resume_text,
+        total_questions=qc, role_source=role_source, keys=keys)
+    level = extraction._normalize_level(analysis.get("detectedLevel") or "fresher")
+    return {"questions": questions, "role": role, "level": level}
+
+
+@router.post("/api/candidate/{cand_id}/generate-questions")
+async def generate_candidate_questions(cand_id: str, request: Request, authorization: str = Header(None)):
+    """PREVIEW the interview question plan so HR can review / edit / add / remove BEFORE scheduling.
+    Stateless — nothing is persisted until /api/candidate/{id}/schedule is called with the final list."""
+    user, m = _require_role(authorization, "HR", "ORG_ADMIN", "SUPER_ADMIN")
+    keys = auth.get_user_keys_decrypted(auth.user_id_from(user))
+    org = _org_of(m)
+    cand = db.get_candidate(cand_id, org)
+    if not cand:
+        raise HTTPException(status_code=404, detail="Candidate not found.")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    qc = max(10, min(16, int(body.get("question_count") or 12)))
+    job = db.get_job_opening(cand.get("job_opening_id"), org) or {}
+    try:
+        plan = _candidate_plan(cand, job, qc, keys)
+    except extraction.llm_stack.LLMExhausted as e:
+        raise HTTPException(status_code=429,
+                            detail={"error": "llm_exhausted", "providers": e.providers_tried})
+    return {"questions": plan["questions"], "role": plan["role"],
+            "level": plan["level"], "count": len(plan["questions"])}
+
+
 @router.post("/api/candidate/{cand_id}/schedule")
 async def schedule_candidate(cand_id: str, request: Request, authorization: str = Header(None)):
-    """Schedule a candidate's interview: reuse the role card's stored static plan for the
-    candidate's level, add their ~20% gap questions, create the session + bot job, email the invite.
-    Enforces one interview per candidate."""
+    """Schedule a candidate's interview. If the request carries an HR-reviewed `questions` array we
+    use it verbatim (v2 review-then-schedule flow); otherwise we generate the plan on the fly.
+    Creates the session + bot job and emails the invite. Enforces one interview per candidate."""
     user, m = _require_role(authorization, "HR", "ORG_ADMIN", "SUPER_ADMIN")
     uid = auth.user_id_from(user)
     keys = auth.get_user_keys_decrypted(uid)
@@ -528,32 +597,28 @@ async def schedule_candidate(cand_id: str, request: Request, authorization: str 
     if not scheduler.is_supported_meeting_url(meeting_url):
         raise HTTPException(status_code=400, detail=(
             f"That doesn't look like a supported meeting link. Please paste a "
-            f"{scheduler.SUPPORTED_MEETING_PLATFORMS} link."))
+            f"{scheduler.SUPPORTED_MEETING_PLATFORMS} link — the interview bot can't join a "
+            f"YouTube or other link."))
 
     job = db.get_job_opening(cand.get("job_opening_id"), org) or {}
     analysis = cand.get("analysis") or {}
     role = cand.get("role") or job.get("title") or analysis.get("jobRole") or "Software Engineer"
-    level = extraction._normalize_level(analysis.get("detectedLevel") or "fresher")
     jd_text = job.get("jd_text") or ""
     resume_text = cand.get("resume_text") or ""
 
-    # reuse the stored static plan for this level; rebuild if it's missing or the count changed
-    static = (job.get("question_sets") or {}).get(level)
-    if not static or int(static.get("total_questions", 0)) != qc:
-        static = extraction.build_static_plan(role, level, qc, job.get("role_source") or "bank",
-                                              analysis=analysis, jd_text=jd_text, keys=keys)
-    gap, gap_n = [], int(static.get("gap_count", 0))
-    if resume_text and jd_text and gap_n > 0:
-        gap_text = analysis.get("gapAnalysisText") or ""
-        if not gap_text:
-            missing = analysis.get("missingSkills", [])
-            gap_text = (f"Candidate lacks experience with {', '.join(missing)}."
-                        if missing else "No major skill gaps identified.")
-        gap = extraction.generate_gap_questions(role, gap_text, jd_text, resume_text, gap_n)
-    questions = extraction.assemble_plan(static, gap)
+    # 1. use the HR-reviewed plan if the client sent one; else generate it now (backward compatible)
+    questions = _sanitize_questions(body.get("questions"))
+    if not questions:
+        try:
+            questions = _candidate_plan(cand, job, qc, keys)["questions"]
+        except extraction.llm_stack.LLMExhausted as e:
+            raise HTTPException(status_code=429,
+                                detail={"error": "llm_exhausted", "providers": e.providers_tried})
 
     name = cand.get("name") or analysis.get("candidateName") or "Candidate"
-    email = cand.get("email") or analysis.get("candidateEmail") or ""
+    # HR may correct the invite address at schedule time (v2.1.0 parity); else fall back to stored.
+    email = (body.get("confirmedEmail") or body.get("email") or cand.get("email")
+             or analysis.get("candidateEmail") or "").strip()
     session_id = db.create_session(bot_id=None, total_questions=len(questions),
                                    candidate_name=name, candidate_email=email, role=role,
                                    status="scheduled", candidate_id=cand_id, organization_id=org)
@@ -602,8 +667,17 @@ def list_interviews(authorization: str = Header(None)):
 # NOTE: these are loaded as iframe/window.open sources, which cannot send an Authorization
 # header, so they authenticate by unguessable UUID only. Fine for an internal tool; Phase 3
 # should move to short-lived signed URLs (esp. for resumes, which are candidate PII).
+def _is_uuid(s: str) -> bool:
+    try:
+        uuid.UUID(str(s)); return True
+    except Exception:
+        return False
+
+
 @router.get("/api/documents/job/{job_id}")
 def document_job(job_id: str):
+    if not _is_uuid(job_id):   # reject non-UUID ids (path-traversal defence-in-depth)
+        raise HTTPException(status_code=404, detail="Not found.")
     path = os.path.join(JD_DIR, f"{job_id}.pdf")
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="No JD document on file for this opening.")
@@ -612,6 +686,8 @@ def document_job(job_id: str):
 
 @router.get("/api/documents/candidate/{cand_id}")
 def document_candidate(cand_id: str):
+    if not _is_uuid(cand_id):
+        raise HTTPException(status_code=404, detail="Not found.")
     path = os.path.join(RESUME_DIR, f"{cand_id}.pdf")
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="No resume on file for this candidate.")
@@ -852,27 +928,35 @@ async def schedule(request: Request, authorization: str = Header(None)):
             "email_sent": email_ok, "questions_generated": len(questions)}
 
 
-# ─── HR dashboard reads ───────────────────────────────────
+# ─── HR dashboard reads (TENANT-SCOPED: an org only sees its own sessions/reports) ──
+def _require_session_in_org(authorization, session_id):
+    """Authenticated member whose org owns `session_id`; 404 otherwise. Blocks cross-tenant IDOR
+    on transcripts / reports / recordings (these tables use the service_role key → no RLS)."""
+    _, m = _require_membership(authorization)
+    if not db.session_in_org(session_id, _org_of(m)):
+        raise HTTPException(status_code=404, detail="Session not found.")
+    return m
+
+
 @router.get("/api/hr/sessions")
 def hr_sessions(authorization: str = Header(None)):
-    _require_user(authorization)
-    return db.list_sessions_with_reports()
+    _, m = _require_membership(authorization)
+    return db.list_sessions_with_reports(_org_of(m))
 
 @router.get("/api/hr/session/{session_id}")
 def hr_session(session_id: str, authorization: str = Header(None)):
-    _require_user(authorization)
+    _require_session_in_org(authorization, session_id)
     return db.get_session_full(session_id)
 
 @router.get("/api/hr/report/{session_id}")
 def hr_report(session_id: str, authorization: str = Header(None)):
-    _require_user(authorization)
+    _require_session_in_org(authorization, session_id)
     return db.get_report(session_id)
 
 @router.post("/api/hr/session/{session_id}/analyze-integrity")
 def hr_analyze_integrity(session_id: str, authorization: str = Header(None)):
-    """Run (or re-run) integrity analysis for a session on demand — handy for local testing on an
-    existing transcript without conducting a fresh interview. Runs in the background; returns immediately."""
-    _require_user(authorization)
+    """Run (or re-run) integrity analysis for a session on demand. Runs in the background."""
+    _require_session_in_org(authorization, session_id)
     import proctor, threading
     bot_id = db.get_bot_id_for_session(session_id)   # so a manual re-run can also test video analysis
     threading.Thread(target=proctor.analyze_session, args=(session_id, bot_id), daemon=True).start()
@@ -883,7 +967,7 @@ def hr_analyze_integrity(session_id: str, authorization: str = Header(None)):
 def hr_recording_url(session_id: str, authorization: str = Header(None)):
     """Return a FRESH pre-signed recording URL (Recall's links expire in hours, so we re-fetch
     on demand using the session's bot_id instead of serving the stale cached URL)."""
-    _require_user(authorization)
+    _require_session_in_org(authorization, session_id)
     bot_id = db.get_bot_id_for_session(session_id)
     if not bot_id:
         raise HTTPException(status_code=404, detail="No recording for this session")
@@ -896,7 +980,7 @@ def hr_recording_url(session_id: str, authorization: str = Header(None)):
 
 @router.get("/api/hr/report/{session_id}/pdf")
 def hr_report_pdf(session_id: str, authorization: str = Header(None)):
-    _require_user(authorization)
+    _require_session_in_org(authorization, session_id)
     report = db.get_report(session_id)
     if not report:
         raise HTTPException(status_code=404, detail="Report not found")

@@ -205,6 +205,17 @@ def save_recording_url(session_id: str, url: str) -> None:
     _exec(op, label="save_recording_url")
 
 
+def session_in_org(session_id: str, organization_id: str) -> bool:
+    """Tenant-safety gate: True only if the session belongs to the given org. Used by the
+    /api/hr/* by-id endpoints so one org can't read another org's transcript/report/recording."""
+    if not session_id or not organization_id:
+        return False
+    def op(db):
+        res = db.table("sessions").select("organization_id").eq("id", session_id).limit(1).execute()
+        return bool(res.data) and res.data[0].get("organization_id") == organization_id
+    return _exec(op, default=False, label="session_in_org")
+
+
 def get_bot_id_for_session(session_id: str) -> str | None:
     """Return the bot_id linked to a session (used to re-fetch a fresh recording URL)."""
     if not session_id:
@@ -687,17 +698,21 @@ def get_questions(session_id) -> list:
         return []
 
 
-def list_sessions_with_reports() -> list:
+def list_sessions_with_reports(organization_id: str = None) -> list:
     """
     Dashboard list, shaped for their frontend:
     adds recommendation/overall_score, selection_status (their SessionsTab filter field),
     and created_at alias (their components read created_at; our column is started_at).
+    Scoped to `organization_id` when given (multi-tenant: an org only sees its own sessions).
     """
     db = _db()
     if not db:
         return []
     try:
-        sess = (db.table("sessions").select("*").order("started_at", desc=True).execute()).data or []
+        _q = db.table("sessions").select("*")
+        if organization_id:
+            _q = _q.eq("organization_id", organization_id)
+        sess = (_q.order("started_at", desc=True).execute()).data or []
         reps = (db.table("reports").select("session_id, recommendation, overall_score").execute()).data or []
         rep_map = {r["session_id"]: r for r in reps}
         for s in sess:
