@@ -32,6 +32,10 @@ _JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")   # Supabase → Settings → API
 # Escape hatch for LOCAL dev only: if no JWT secret is set, auth is normally REFUSED (fail closed).
 # Set AUTH_ALLOW_UNVERIFIED=true locally to permit unverified token decode for testing.
 _ALLOW_UNVERIFIED = os.getenv("AUTH_ALLOW_UNVERIFIED", "").strip().lower() == "true"
+# Supabase JWKS (public keys) — verifies the modern asymmetric signing keys (ES256/RS256), the
+# current default for new projects. No secret needed; just SUPABASE_URL. HS256 still supported.
+_JWKS_URL = (_URL.rstrip("/") + "/auth/v1/.well-known/jwks.json") if _URL else None
+_jwk_client = None
 
 _sb = None
 def _db():
@@ -66,9 +70,25 @@ import base64 as _b64, json as _json
 _warned_unverified = False
 
 
+def _jwks():
+    """Lazy PyJWKClient for Supabase's public JWKS (caches keys, refetches on an unknown kid)."""
+    global _jwk_client
+    if _jwk_client is None and _JWKS_URL:
+        import jwt  # PyJWT
+        _jwk_client = jwt.PyJWKClient(_JWKS_URL)
+    return _jwk_client
+
+
+def _warn_once():
+    global _warned_unverified
+    if not _warned_unverified:
+        _warned_unverified = True   # set first: a print failure must never re-fire or block auth
+        print("[SECURITY] AUTH_ALLOW_UNVERIFIED=true — JWTs are NOT signature-verified. LOCAL DEV ONLY.")
+
+
 def _decode_unverified(token: str) -> dict:
-    """Read the payload WITHOUT verifying the signature. Only reached when SUPABASE_JWT_SECRET
-    is not configured — INSECURE, dev-only (any forged token is accepted)."""
+    """Read the payload WITHOUT verifying the signature. Only reached with AUTH_ALLOW_UNVERIFIED=true
+    and no applicable verification material — INSECURE, dev-only (any forged token is accepted)."""
     parts = token.split('.')
     if len(parts) != 3:
         raise ValueError("Malformed JWT")
@@ -82,53 +102,57 @@ def _decode_unverified(token: str) -> dict:
 
 def verify_token(authorization: str):
     """
-    Validate a Supabase JWT from the 'Authorization: Bearer <token>' header. Returns {id, email}
-    or raises ValueError.
+    Validate a Supabase JWT from 'Authorization: Bearer <token>'. Returns {id, email} or raises.
 
-    When SUPABASE_JWT_SECRET is set we VERIFY the HS256 signature + expiry + audience (secure).
-    When it's missing we fall back to an UNVERIFIED payload decode and log a loud warning — so
-    local dev isn't blocked, but every DEPLOYED environment MUST set the secret or anyone can
-    forge a token and impersonate a super-admin.
+    Verifies the signature per the token's algorithm:
+      - ES256 / RS256 / EdDSA (Supabase's modern asymmetric signing keys) via the public JWKS at
+        SUPABASE_URL/auth/v1/.well-known/jwks.json — no secret needed.
+      - HS256 (legacy shared secret) via SUPABASE_JWT_SECRET.
+    Always enforces exp + audience='authenticated'. FAILS CLOSED when it can't verify, unless
+    AUTH_ALLOW_UNVERIFIED=true (local dev only), which falls back to an unverified decode.
     """
-    global _warned_unverified
     if not authorization or not authorization.startswith("Bearer "):
         raise ValueError("Missing or invalid Authorization header")
     token = authorization.split(" ", 1)[1]
 
-    if _JWT_SECRET:
+    try:
+        import jwt  # PyJWT
+    except ImportError:
+        jwt = None
+
+    if jwt is not None:
         try:
-            import jwt  # PyJWT
-        except ImportError:
-            # Secret is configured but the library is missing → FAIL CLOSED. Never silently
-            # skip signature verification (that would accept forged tokens in production).
-            raise ValueError("Auth misconfigured: PyJWT is not installed but SUPABASE_JWT_SECRET is set.")
+            alg = (jwt.get_unverified_header(token) or {}).get("alg")
+        except Exception:
+            alg = None
+        _opts = {"require": ["exp", "sub"]}
+        payload = None
         try:
-            payload = jwt.decode(
-                token, _JWT_SECRET, algorithms=["HS256"],
-                audience="authenticated", leeway=10,
-                options={"require": ["exp", "sub"]},
-            )
+            if alg in ("ES256", "RS256", "EdDSA") and _jwks() is not None:
+                key = _jwks().get_signing_key_from_jwt(token).key
+                payload = jwt.decode(token, key, algorithms=["ES256", "RS256", "EdDSA"],
+                                     audience="authenticated", leeway=10, options=_opts)
+            elif alg == "HS256" and _JWT_SECRET:
+                payload = jwt.decode(token, _JWT_SECRET, algorithms=["HS256"],
+                                     audience="authenticated", leeway=10, options=_opts)
         except jwt.ExpiredSignatureError:
             raise ValueError("Token expired — please log in again")
         except Exception as e:
+            # verification attempted but failed (bad signature, JWKS fetch/kid error, …)
+            if _ALLOW_UNVERIFIED:
+                _warn_once(); return _decode_unverified(token)
             raise ValueError(f"Invalid token: {e}")
-        uid = payload.get("sub") or payload.get("user_id")
-        if not uid:
-            raise ValueError("No user ID in token")
-        return {"id": uid, "email": payload.get("email", "")}
+        if payload is not None:
+            uid = payload.get("sub") or payload.get("user_id")
+            if not uid:
+                raise ValueError("No user ID in token")
+            return {"id": uid, "email": payload.get("email", "")}
 
-    # ── no secret configured ──
-    # FAIL CLOSED by default: refuse auth unless an operator has explicitly opted into the
-    # insecure dev fallback (AUTH_ALLOW_UNVERIFIED=true). A prod deploy that forgets the secret
-    # then rejects every request (loud + safe) instead of silently accepting forged tokens.
-    if not _ALLOW_UNVERIFIED:
-        raise ValueError("Auth not configured: set SUPABASE_JWT_SECRET "
-                         "(or AUTH_ALLOW_UNVERIFIED=true for local dev only).")
-    if not _warned_unverified:
-        _warned_unverified = True   # set first: a print failure must never re-fire or block auth
-        print("[SECURITY] AUTH_ALLOW_UNVERIFIED=true and no SUPABASE_JWT_SECRET - JWTs are NOT "
-              "signature-verified. LOCAL DEV ONLY. Never set this in a deployed environment.")
-    return _decode_unverified(token)
+    # No material to verify this token's algorithm (or PyJWT missing).
+    if _ALLOW_UNVERIFIED:
+        _warn_once(); return _decode_unverified(token)
+    raise ValueError("Auth cannot verify this token — set SUPABASE_URL (for JWKS) or "
+                     "SUPABASE_JWT_SECRET (or AUTH_ALLOW_UNVERIFIED=true for local dev).")
 
 
 def user_id_from(user) -> str:
