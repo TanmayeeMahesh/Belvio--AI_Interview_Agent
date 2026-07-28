@@ -50,7 +50,7 @@ CANDIDATE RESUME:
 
 Rules:
 - Detect experience level from years of experience, job titles, project complexity, responsibilities.
-- fresher = <1 year, intermediate = 1-5 years, experienced = 5+ years.
+- fresher = <1 year, junior = 1–3 years, mid = 3–5 years, senior = 5+ years.
 - Scan the resume text for the candidate's email address if present.
 
 Return EXACTLY this JSON (no deviations):
@@ -58,7 +58,7 @@ Return EXACTLY this JSON (no deviations):
   "candidateName": "extracted full name or 'Candidate'",
   "candidateEmail": "extracted email or null",
   "jobRole": "the specific role title from the JD or the provided role",
-  "detectedLevel": "fresher|intermediate|experienced",
+  "detectedLevel": "fresher|junior|mid|senior",
   "levelReason": "one short line (e.g. '3 years React experience')",
   "yearsExperience": 0,
   "skills": ["..."],
@@ -202,14 +202,35 @@ def resolve_bank_role(job_role: str):
     return (None, "none")
 
 
+# ─── EXPERIENCE LEVELS (4 tiers, 1:1 with the question-bank bands) ───────────
+# fresher 0–1 yr | junior 1–3 yr | mid 3–5 yr | senior 5+ yr
+LEVELS = ("fresher", "junior", "mid", "senior")
+_LEVEL_ALIASES = {
+    "fresher": "fresher", "entry": "fresher", "graduate": "fresher", "intern": "fresher",
+    "junior": "junior", "jr": "junior", "associate": "junior",
+    "mid": "mid", "intermediate": "mid", "middle": "mid", "mid-level": "mid", "midlevel": "mid",
+    "senior": "senior", "experienced": "senior", "lead": "senior",
+    "principal": "senior", "staff": "senior", "expert": "senior", "sr": "senior",
+}
+
+
+def _normalize_level(level: str) -> str:
+    """Map any level string (incl. legacy 'intermediate'/'experienced'/'lead') to one of the
+    4 canonical tiers: fresher | junior | mid | senior. Unknown/empty → 'mid'."""
+    return _LEVEL_ALIASES.get(str(level or "").strip().lower(), "mid")
+
+
 def parse_question_bank(job_role: str, level: str, num_questions: int) -> list:
+    lvl = _normalize_level(level)
+    # 1:1 map from the 4 canonical tiers to the bank's 4 experience bands.
     level_map = {
         "fresher": ["Fresher (0–1 year of experience)"],
-        "intermediate": ["Experienced (1–3 years of experience)", "Experienced (3–5 years of experience)"],
-        "experienced": ["Experienced (5+ years of experience)"]
+        "junior":  ["Experienced (1–3 years of experience)"],
+        "mid":     ["Experienced (3–5 years of experience)"],
+        "senior":  ["Experienced (5+ years of experience)"],
     }
-
-    target_levels = level_map.get(level.lower(), level_map["intermediate"])
+    target_levels = level_map.get(lvl, level_map["mid"])
+    _depth = {"fresher": "surface", "junior": "medium", "mid": "medium", "senior": "deep"}[lvl]
 
     try:
         with open("question_bank.md", "r", encoding="utf-8") as f:
@@ -256,7 +277,7 @@ def parse_question_bank(job_role: str, level: str, num_questions: int) -> list:
                     "question": q_text,
                     "topic": topic,
                     "question_type": "technical",
-                    "depth": "medium" if level == "intermediate" else ("surface" if level == "fresher" else "deep"),
+                    "depth": _depth,
                     "target_skill": topic,
                     "key_concepts": [topic]
                 })
@@ -408,63 +429,118 @@ Return ONLY a JSON array, each item EXACTLY:
     return out
 
 
+def _intro_pool(level: str) -> list:
+    """The static intro/closing pool. [0],[1] = opening; [2],[3] = closing. Slot [2] is the
+    level-aware forward-looking closer (Leadership & Growth for experienced/senior/lead).
+    Single source of truth — used by both generate_question_plan and build_static_plan."""
+    level = _normalize_level(level)
+    is_senior_or_lead = level == "senior"
+    return [
+        {
+            "question": "To begin, could you please introduce yourself? Feel free to walk us through your educational background, professional experience, and anything else you'd like us to know.",
+            "topic": "Introduction", "question_type": "introduction", "depth": "surface",
+            "target_skill": "communication", "key_concepts": ["introduction", "background"],
+        },
+        {
+            "question": ("Could you tell us about a project you've worked on that you're particularly proud of? Please describe the problem you were solving, your specific role and contributions, the tools or technologies you used, and the final outcome or impact."
+                         if level == "fresher" else
+                         "Could you walk us through your core responsibilities in your most recent role, particularly highlighting a challenging problem you successfully resolved?"),
+            "topic": "Projects" if level == "fresher" else "Responsibilities",
+            "question_type": "behavioral", "depth": "medium",
+            "target_skill": "experience", "key_concepts": ["project", "impact", "tools"],
+        },
+        {
+            "question": ("As we near the end, I'd like to focus on leadership and growth. Could you describe a time you led a team or initiative through a difficult challenge — what you did, what you learned, and how you see your leadership scope growing over the next few years?"
+                         if is_senior_or_lead else
+                         "As we wrap up, where do you see yourself professionally over the next five years, and how do you feel this role would fit into that journey?"),
+            "topic": "Leadership & Growth" if is_senior_or_lead else "Career Goals",
+            "question_type": "closing", "depth": "medium",
+            "target_skill": "leadership" if is_senior_or_lead else "motivation",
+            "key_concepts": ["leadership", "growth"] if is_senior_or_lead else ["future", "goals"],
+        },
+        {
+            "question": "Finally, do you have any questions for us — about the role, the team, the company, or anything else you'd like to know before we conclude the interview?",
+            "topic": "Candidate Questions", "question_type": "closing", "depth": "surface",
+            "target_skill": "curiosity", "key_concepts": ["questions"],
+        },
+    ]
+
+
+def _build_technical(role, level, count, role_source="bank", analysis=None, jd_text="", resume_text="", keys=None) -> list:
+    """The ~50% technical middle: question bank (exact role), nearest-role match, or the LLM —
+    per role_source. Falls back to the first bank role so a plan is never empty."""
+    if count <= 0:
+        return []
+    analysis = analysis or {}
+    if role_source == "llm":
+        tech = generate_tech_questions_llm(role, level, count, analysis, jd_text, resume_text, keys)
+    else:
+        canonical = role
+        if role_source == "match":
+            resolved, _method = resolve_bank_role(role)
+            canonical = resolved or role
+        tech = parse_question_bank(canonical, level, count)
+    if not tech:
+        fb_roles = list_bank_roles()
+        fb = fb_roles[0] if fb_roles else role
+        logger.warning(f"No technical questions for role '{role}' (source={role_source}) — falling back to bank '{fb}'")
+        tech = parse_question_bank(fb, level, count)
+    return tech
+
+
+def build_static_plan(role: str, level: str, total_questions: int = 12, role_source: str = "bank",
+                      analysis: dict = None, jd_text: str = "", keys: dict = None) -> dict:
+    """The reusable, per-role-per-level STATIC portion (opening + technical + closing) with NO gap.
+    Stored once per role card; each candidate's ~20% gap questions are merged in later via
+    assemble_plan(). `gap_count` records how many gap slots to reserve for the candidate."""
+    level = _normalize_level(level)
+    total_questions = max(10, min(16, int(total_questions or 12)))
+    intro_count = math.floor(0.3 * total_questions)
+    gap_count = math.floor(0.2 * total_questions)
+    pool = _intro_pool(level)
+    opening_to_add = min(2, intro_count)
+    closing_to_add = min(2, max(0, intro_count - opening_to_add))
+    tech_count = total_questions - intro_count - gap_count   # reserve the gap slots for the candidate
+    tech = _build_technical(role, level, tech_count, role_source, analysis or {}, jd_text, "", keys)
+    return {
+        "opening": pool[:opening_to_add],
+        "technical": tech,
+        "closing": pool[2:2 + closing_to_add],
+        "gap_count": gap_count,
+        "level": level,
+        "total_questions": total_questions,
+    }
+
+
+def assemble_plan(static: dict, gap_questions: list = None) -> list:
+    """Merge a stored static plan with this candidate's gap questions → final ordered plan:
+    opening → technical → gap → closing."""
+    static = static or {}
+    gap_questions = gap_questions or []
+    return (list(static.get("opening", []))
+            + list(static.get("technical", []))
+            + list(gap_questions)
+            + list(static.get("closing", [])))
+
+
 def generate_question_plan(analysis: dict, role: str = None, jd_text: str = "", resume_text: str = "",
                            total_questions: int = 10, role_source: str = "bank", keys: dict = None) -> list:
     role = role or analysis.get("jobRole", "Software Engineer")
-    level = str(analysis.get("detectedLevel", "fresher") or "fresher").lower()
+    level = _normalize_level(analysis.get("detectedLevel") or "fresher")
 
     # Central 10-16 clamp so EVERY endpoint respects the meeting-length limit (US spec).
     total_questions = max(10, min(16, int(total_questions or 10)))
 
-    # "experienced" (5+ yrs) is our senior/lead tier; the upcoming HR experience-level UI may
-    # also pass an explicit "senior"/"lead" — both get the Leadership & Growth closing variant.
-    is_senior_or_lead = level in ("experienced", "senior", "lead")
+    # senior (5+ yrs) gets the Leadership & Growth closing; the other 3 tiers get the
+    # standard forward-looking career-goals closer.
+    is_senior_or_lead = level == "senior"
 
     intro_count = math.floor(0.3 * total_questions)
     gap_count = math.floor(0.2 * total_questions)
     
     questions = []
     
-    intro_pool = [
-        {
-            "question": "To begin, could you please introduce yourself? Feel free to walk us through your educational background, professional experience, and anything else you'd like us to know.",
-            "topic": "Introduction",
-            "question_type": "introduction",
-            "depth": "surface",
-            "target_skill": "communication",
-            "key_concepts": ["introduction", "background"]
-        },
-        {
-            "question": "Could you tell us about a project you've worked on that you're particularly proud of? Please describe the problem you were solving, your specific role and contributions, the tools or technologies you used, and the final outcome or impact." if level == "fresher" else "Could you walk us through your core responsibilities in your most recent role, particularly highlighting a challenging problem you successfully resolved?",
-            "topic": "Projects" if level == "fresher" else "Responsibilities",
-            "question_type": "behavioral",
-            "depth": "medium",
-            "target_skill": "experience",
-            "key_concepts": ["project", "impact", "tools"]
-        },
-        {
-            "question": (
-                "As we near the end, I'd like to focus on leadership and growth. Could you describe a time you "
-                "led a team or initiative through a difficult challenge — what you did, what you learned, and how "
-                "you see your leadership scope growing over the next few years?"
-                if is_senior_or_lead else
-                "As we wrap up, where do you see yourself professionally over the next five years, and how do you feel this role would fit into that journey?"
-            ),
-            "topic": "Leadership & Growth" if is_senior_or_lead else "Career Goals",
-            "question_type": "closing",
-            "depth": "medium",
-            "target_skill": "leadership" if is_senior_or_lead else "motivation",
-            "key_concepts": ["leadership", "growth"] if is_senior_or_lead else ["future", "goals"]
-        },
-        {
-            "question": "Finally, do you have any questions for us — about the role, the team, the company, or anything else you'd like to know before we conclude the interview?",
-            "topic": "Candidate Questions",
-            "question_type": "closing",
-            "depth": "surface",
-            "target_skill": "curiosity",
-            "key_concepts": ["questions"]
-        }
-    ]
+    intro_pool = _intro_pool(level)
     
     # Determine how many opening vs closing questions to add from the pool
     opening_to_add = min(2, intro_count)
@@ -486,25 +562,9 @@ def generate_question_plan(analysis: dict, role: str = None, jd_text: str = "", 
         
     actual_gap_count = len(gap_questions)
     
-    # 3. Technical Questions (the ~50% middle) — from the bank (exact role), a nearest-role match,
-    #    or the LLM, per how HR chose the role (role_source: 'bank' | 'match' | 'llm').
+    # 3. Technical (~50% middle) — shared helper (bank / nearest-match / LLM, with fallback).
     tech_count = total_questions - (intro_count + actual_gap_count)
-    tech_questions = []
-    if tech_count > 0:
-        if role_source == "llm":
-            tech_questions = generate_tech_questions_llm(role, level, tech_count, analysis, jd_text, resume_text, keys)
-        else:
-            canonical = role
-            if role_source == "match":
-                resolved, _method = resolve_bank_role(role)
-                canonical = resolved or role
-            tech_questions = parse_question_bank(canonical, level, tech_count)
-        if not tech_questions:
-            fb_roles = list_bank_roles()
-            fb = fb_roles[0] if fb_roles else role
-            logger.warning(f"No technical questions for role '{role}' (source={role_source}) — falling back to bank '{fb}'")
-            tech_questions = parse_question_bank(fb, level, tech_count)
-    questions.extend(tech_questions)
+    questions.extend(_build_technical(role, level, tech_count, role_source, analysis, jd_text, resume_text, keys))
         
     # Append gap questions AFTER technical questions
     questions.extend(gap_questions)

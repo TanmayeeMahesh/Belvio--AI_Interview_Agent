@@ -10,6 +10,7 @@ pypdf
 reportlab
 cryptography
 python-multipart
+pyjwt                    # verify Supabase JWT signatures (auth.verify_token; HS256 via SUPABASE_JWT_SECRET)
 
 # ── Proctoring video analysis (local CV stack, CPU-only, no cloud) ──
 opencv-python-headless   # frame decode + YuNet/SFace via OpenCV DNN (headless = no GUI libs)
