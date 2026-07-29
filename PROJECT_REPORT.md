@@ -1,8 +1,8 @@
 # Belvio — AI Interview Agent · Project Report
 
-> **Version:** Post-deployment iteration (updated after Hugging Face + Vercel launch and the scoring/recording/email fixes).
+> **Version:** `v2.2.0` — multi-tenant platform. **Parts I (§1–15)** below document the single-tenant interview engine (v2.1.0), which is unchanged and still the core. **[Part II](#part-ii--v220-multi-tenant-platform)** (§16–27) documents the v2.2.0 work: multi-tenancy/RBAC, the new API + frontend, proctoring/integrity, the security model, and deployment.
 > **Audience:** Engineers (low-level "how it works") **and** stakeholders (application-level "what it does and why").
-> **One-line definition:** An autonomous platform that takes a résumé + job description, conducts a *live voice interview* with a candidate through a meeting bot, then scores it and produces a hiring report — with no human interviewer in the loop.
+> **One-line definition:** A multi-tenant, autonomous platform where an organization uploads a résumé + job description, an HR user reviews an AI-generated question plan, a meeting bot conducts a *live voice interview*, and the system scores it, produces a hiring report, and runs a post-interview integrity review — with no human interviewer in the loop.
 
 ---
 
@@ -447,6 +447,111 @@ git push hf main                  # Hugging Face (auto-rebuilds the Docker image
 - **Pre-generated Excellent/Good/Poor rubric** per question (#5) — deferred; the calibrated scorer + `key_concepts` covers the immediate need.
 - **Instant session-close** via the account-level lifecycle webhook (replacing the poll).
 - **Durable recording storage** (copy the S3 file before the link expires).
+
+---
+
+# Part II — v2.2.0 Multi-Tenant Platform
+
+Part I (§1–15) describes the single-tenant interview engine. v2.2.0 wraps that engine in a **multi-tenant SaaS**: many organizations, each with its own admins, HRs, job openings, candidates, and data isolation. The interview engine itself (bot → live interview → evaluation → PDF) is **byte-identical to v2.1.0**; only `extraction.py` evolved (4 experience levels + role-card support). This part documents everything new.
+
+## 16. Multi-Tenancy & RBAC
+
+- **Tenant = organization.** Tables: `organizations` and `organization_users` (the membership/role table).
+- **Role hierarchy:** `SUPER_ADMIN` (platform) › `ORG_ADMIN` (one org) › `HR` (one org). (`RECRUITER` / `INTERVIEWER` roles are accepted as HR-equivalents.)
+- **Resolution:** each request's Supabase Auth `user_id` (JWT `sub`) → `get_user_membership(user_id)` → `{organization_id, role, organization_name}`. Backend guards: `_require_user` (authenticated), `_require_membership` (has an org), `_require_role(*roles)`, and `_org_of(m)` (rejects accounts with no org).
+- **The frontend routes off `/api/whoami`** (`{email, role, organization_id, organization_name}`): SUPER_ADMIN → org management + create-org; ORG_ADMIN → HR management, job openings, candidates, settings; HR → job openings, candidates, interviews, reports.
+
+## 17. Registration / Invite Flow (no self-signup)
+
+Every user is **pre-seeded** as a `PENDING` `organization_users` row (a super-admin creating an org can seed its ORG_ADMIN; an org-admin adds HRs). On first login the user sets a password:
+
+1. **`POST /api/auth/check-email`** → `{exists, status, role}`. `PENDING` → the UI shows a "set password" step; `ACTIVE` → password step.
+2. **`POST /api/auth/complete-registration`** → creates the Supabase **Auth** login (admin API, service_role) and flips the membership to `ACTIVE`.
+3. **`POST /api/auth/login`** → Supabase `sign_in_with_password` → JWT.
+
+A super-admin can also mint a login + role directly via `POST /api/admin/create-user`, or seed an org-admin via `POST /api/admin/organizations/{id}/invite-admin`.
+
+## 18. Multi-Tenant API Surface (`api_routes.py`)
+
+All org-scoped; every handler enforces role/membership and filters DB reads by `organization_id`.
+
+- **Auth:** `check-email`, `complete-registration`, `login`, `whoami`.
+- **Super-admin:** `GET/POST /api/admin/organizations`, `DELETE …/{id}`, `POST …/{id}/invite-admin`, `POST /api/admin/create-user`.
+- **Dashboards:** `GET /api/dashboard/{super-admin, org-admin, hr}` (role-scoped tiles).
+- **Org-admin:** `GET /api/org-admin/hrs`, `POST /api/org-admin/create-hr`, `DELETE /api/org-admin/hr/{id}` (can't delete admins), `GET/PUT /api/org-admin/settings` (email template).
+- **Job openings (role cards):** `GET/POST/DELETE /api/job-openings`, `GET …/{id}/candidates`, `GET …/{id}/stats`. The JD is uploaded once; `role`/`roleSource` (`bank`/`match`/`llm`) chosen at creation.
+- **Candidates:** `GET /api/candidates`, `POST /api/candidates/upload` (résumé-only vs a job opening → analysis), `POST /api/candidate/{id}/generate-questions` (preview), `POST /api/candidate/{id}/schedule` (uses the HR-reviewed list; one-interview-per-candidate).
+- **Interviews:** `GET /api/interviews` (org-scoped, live status from the session).
+- **Documents:** `GET /api/documents/{job,candidate}/{id}` (PDF preview by UUID for iframes; unauthenticated by design — see §21).
+- **HR reports (now tenant-scoped):** `GET /api/hr/sessions`, `/api/hr/session/{id}`, `/api/hr/report/{id}`, `…/pdf`, `…/recording`, `POST …/analyze-integrity`.
+
+## 19. Question Generation & HR Review (v2.1 engine, re-homed)
+
+- Role + JD live on the **job opening**; the résumé + analysis live on the **candidate**. A candidate's plan is generated at review time via the exact v2.1.0 `generate_question_plan(analysis, role, jd_text, resume_text, count, role_source)` — 30 % opening/closing + 50 % technical (17-role bank, nearest-match, or LLM) + 20 % gap (fine-tuned Flan-T5), clamped 10–16, **always filled to N** (technical backfills any gap shortfall).
+- **HR review flow (frontend `ScheduleModal`):** set count → **Generate** → review, **edit / add / remove** questions → meeting-link guard (Zoom/Meet/Teams/Webex only) → **Confirm & Schedule** → confirmation panel (session id, bot-joins-at, invite sent). The reviewed list is stored verbatim (`_sanitize_questions`).
+
+## 20. Proctoring & Integrity Reporting (`proctor.py`)
+
+Post-interview **integrity analysis** ("Mode A"), auto-triggered in a background thread when an interview ends (gated by `PROCTORING_ENABLED`, default on). **Fail-safe** — never raises into the interview flow; on error it saves a partial `{assessed:false}` result. Written to a **decoupled `integrity_reports` table** (no write race with the evaluator); the fast text result saves first, the slower video result updates the row when ready.
+
+**Two independent signals — both explicit *flags for human review*, never automated verdicts:**
+
+1. **Transcript authenticity (text):** a Groq `llama-3.3-70b-versatile` pass over the candidate's answers, flagging responses that read like AI-generated text read aloud → `transcript_authenticity.flagged_answers`.
+2. **Video integrity (fully local, CPU-only — candidate frames never leave the server; models baked into the Docker image; CV libs imported lazily so boot never depends on them):**
+   - **YuNet** (face detection) + **SFace** (face recognition), OpenCV DNN → face **presence**, **second-person** detection, **same-person** verification across the interview.
+   - **YOLOX-Nano** (onnxruntime) → **phone detection**.
+   - Strong events carry a **timestamp** + embedded **evidence thumbnail**.
+
+**Tunables (env):** frame-sample interval (`PROCTOR_FRAME_SEC`=3s), phone-scan interval (`PROCTOR_PHONE_SEC`=6s), SFace same-identity cosine cutoff (`PROCTOR_SFACE_COS`), phone confidence (`PROCTOR_PHONE_CONF`), persistence minimums for 2nd-person / different-person / missing-face (ignore brief pass-bys), camera-off threshold (face in < 20 % of frames), evidence cap. The CPU-bound scan is lock-serialized for the 2-vCPU tier.
+
+**Output & UI:** the report carries `integrity_flag` (severity `minor` / `significant`, combined across signals), a plain-language `summary`, `transcript_authenticity.flagged_answers`, and video stats (`face_present_pct`, `camera_off`). The frontend **Reports** page renders an **"Integrity Review"** panel; HR can re-run via `POST /api/hr/session/{id}/analyze-integrity`.
+
+## 21. Security Model
+
+- **JWT verification (`auth.py`):** the Supabase project signs tokens with **asymmetric ES256 keys**; `verify_token` verifies the signature against Supabase's **public JWKS** (`SUPABASE_URL/auth/v1/.well-known/jwks.json`, via `PyJWKClient`) for ES256/RS256/EdDSA, with **HS256 + `SUPABASE_JWT_SECRET`** as a legacy fallback. It always enforces `exp` + `aud="authenticated"` and **fails closed** when it can't verify (unless `AUTH_ALLOW_UNVERIFIED=true`, local dev only). No JWT secret needs to be configured on deploys — `SUPABASE_URL` is enough.
+- **Tenant isolation:** the DB client uses the Supabase **service_role** key (bypasses RLS), so isolation is enforced in code — every org-scoped query filters by `organization_id`, and the by-id `/api/hr/*` endpoints verify the session belongs to the caller's org (`session_in_org`) before returning transcripts/reports/recordings.
+- **Other guards:** org-admins can't delete admin/super-admin memberships; document endpoints validate UUIDs; `SCHEDULER_ENABLED` kills DB-mutating workers on shared-DB instances; the scheduler uses an atomic claim so two instances can't double-deploy a bot.
+- **Known gaps (tracked follow-ups):** invites have no secret token (email-knowledge activates a PENDING role — add an invite token); document URLs are unauthenticated-by-UUID (move to short-lived signed URLs); no DB unique constraint on `scheduled_interviews.candidate_id` (TOCTOU on the one-interview guard).
+
+## 22. Frontend (React + Vite, Vercel)
+
+Role-based shell: `Login` / `LandingPage`; `SuperAdminDashboard` + `CreateOrganization`; `OrgAdminDashboard` + `HRManagement` + `OrgSettings`; `HRDashboard`; shared `JobOpenings`, `JobDetails`, `Candidates`, `Interviews`, `Reports`. Auth via Supabase; `api.js` sends `Bearer <token>`. `Reports` retains the full v2.1 view incl. the Integrity Review; `ScheduleModal` implements the generate→review→schedule flow (§19). `VITE_API_URL` selects the backend (localhost / staging / prod).
+
+## 23. Data Model Additions (Supabase / Postgres)
+
+On top of the Part I tables (`sessions`, `questions`, `answers`, `reports`, `candidates`):
+- **`organizations`** — `id, name, status, email_template, created_at`.
+- **`organization_users`** — `id, organization_id, user_id (Auth id, null while PENDING), email, name, role, status (PENDING|ACTIVE), created_at`.
+- **`job_openings`** — `id, organization_id, title, description, jd_text, status, role_source, question_count, jd_analysis (jsonb), question_sets (jsonb), created_at`.
+- **`candidates`** (extended) — `+ organization_id, job_opening_id, resume_text, analysis (jsonb)`.
+- **`sessions`** (extended) — `+ organization_id`.
+- **`scheduled_interviews`** (extended) — `+ organization_id, candidate_id`.
+- **`integrity_reports`** — one row per session: `integrity_flag, assessed, summary, transcript_authenticity, video, note`.
+
+Migrations: `migrations/2026-07-24_job_openings_questions.sql`, `migrations/2026-07-25_multitenant_phase1.sql` (idempotent `add column if not exists` + indexes).
+
+## 24. Deployment (v2.2.0)
+
+- **Topology:** GitHub `main` (source of truth, protected → PR only) → **Vercel** auto-rebuilds the frontend on merge; the backend is pushed to **HF Spaces** — `hf-staging` then `hf` (prod). HF is **backend-only**.
+- **HF binary gotcha:** HF Spaces reject *any* committed binary via plain git (regardless of size). Since HF doesn't serve the frontend, the deploy uses a **backend-only tree** (squash the branch onto the last release tag, `git rm -r --cached frontend`, push `:main`). Recipe is in the README and the `deploy-topology` memory.
+- **Env:** prod HF keeps `SCHEDULER_ENABLED` true/unset (runs the scheduler + stuck-session cleaner); staging `false`; local `false`. No JWT secret needed (JWKS).
+- **Release:** tag `v2.2.0`. Backend live on prod + staging (verified via `/api/auth/check-email`).
+
+## 25. Integration Summary (how the parts came together)
+
+v2.2.0 stitched independently built pieces into one product: the **v2.1.0 interview engine** (kept intact), the **fine-tuned Flan-T5 gap model** (private HF model repo, downloaded + prewarmed at boot), a **multi-tenant React frontend** (adopted as the UI, wired to the backend contract, with the v2.1 review flow re-homed into candidate scheduling and the integrity-complete report kept), and **proctoring/integrity** (surfaced end-to-end in the report). One Supabase project backs all environments; the backend verifies tokens via JWKS and resolves each request to an organization for isolation.
+
+## 26. Features Handled (platform / integration lead)
+
+*Adjust attribution for your write-up.* Multi-tenant backend + RBAC; invite/registration flow; question-generation engine + gap-model integration; the HR review-then-schedule flow; scheduling/lifecycle safety (atomic claim, kill-switch, stuck-session cleaner); the security overhaul (JWKS auth + tenant scoping + guards); and release engineering (staging→prod, backend-only HF deploy, `v2.2.0` tag).
+
+## 27. v2.2.0 Constraints & Follow-ups
+
+- **Invite-token flow** — add an unguessable token to registration (close the PENDING-account takeover window).
+- **Signed document URLs** — replace unauthenticated-by-UUID resume/JD access with short-lived signed URLs.
+- **Question-plan top-up** — when a bank band has fewer questions than requested, pad from other bands / the LLM (HR review currently mitigates).
+- **Unique constraint** on `scheduled_interviews.candidate_id` — make the one-interview guard authoritative.
+- **Super-admin cross-org reporting** — `/api/hr/*` is scoped to the caller's own org (least-privilege); add an explicit cross-org view if needed.
 
 ---
 

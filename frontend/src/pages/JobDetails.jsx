@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import API from "../api";
+import API, { signedDocUrl } from "../api";
 import ScheduleModal from "../components/ScheduleModal";
 
 export default function JobDetails({ jobId, jobName, role }) {
@@ -225,12 +225,10 @@ export default function JobDetails({ jobId, jobName, role }) {
                     <td>
                       <button
                         className="btn-secondary btn-sm"
-                        onClick={() =>
-                          window.open(
-                            `${API.defaults.baseURL}/api/documents/candidate/${c.id}`,
-                            "_blank",
-                          )
-                        }
+                        onClick={async () => {
+                          try { window.open(await signedDocUrl("candidate", c.id), "_blank"); }
+                          catch { alert("Could not open resume."); }
+                        }}
                         style={{ padding: "4px 10px", fontSize: 12 }}
                       >
                         📄 View Resume

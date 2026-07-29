@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import API from "../api";
+import API, { signedDocUrl } from "../api";
 
 export default function HRDashboard({ onOpenJob }) {
   const [stats, setStats] = useState(null);
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [previewJob, setPreviewJob] = useState(null);
+  const [previewUrl, setPreviewUrl] = useState("");
 
   useEffect(() => {
     async function loadData() {
@@ -81,7 +82,7 @@ export default function HRDashboard({ onOpenJob }) {
                 <div style={{ marginTop: "auto", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <button 
                     className="btn-outline btn-sm" 
-                    onClick={(e) => { e.stopPropagation(); setPreviewJob(job); }}
+                    onClick={(e) => { e.stopPropagation(); setPreviewJob(job); setPreviewUrl(""); signedDocUrl("job", job.id).then(setPreviewUrl).catch(() => setPreviewUrl("")); }}
                     style={{ color: "#3b82f6", borderColor: "rgba(59, 130, 246, 0.5)" }}
                   >
                     Preview JD
@@ -97,18 +98,18 @@ export default function HRDashboard({ onOpenJob }) {
       {/* JD Preview Panel */}
       {previewJob && (
         <>
-          <div className="slide-over-overlay" onClick={() => setPreviewJob(null)}></div>
+          <div className="slide-over-overlay" onClick={() => { setPreviewJob(null); setPreviewUrl(""); }}></div>
           <div className="slide-over-panel open">
             <div style={{ padding: "24px 32px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <h2 style={{ margin: 0, fontSize: 20 }}>Job Description: {previewJob.title}</h2>
-              <button className="btn-ghost" onClick={() => setPreviewJob(null)} style={{ padding: "4px 8px", fontSize: 20 }}>&times;</button>
+              <button className="btn-ghost" onClick={() => { setPreviewJob(null); setPreviewUrl(""); }} style={{ padding: "4px 8px", fontSize: 20 }}>&times;</button>
             </div>
             <div style={{ flex: 1, padding: 0 }}>
-              <iframe 
-                src={`${API.defaults.baseURL || ""}/api/documents/job/${previewJob.id}`} 
-                style={{ width: "100%", height: "100%", border: "none" }}
-                title="JD Preview"
-              />
+              {previewUrl ? (
+                <iframe src={previewUrl} style={{ width: "100%", height: "100%", border: "none" }} title="JD Preview" />
+              ) : (
+                <div className="text-secondary" style={{ padding: 24 }}>Loading document…</div>
+              )}
             </div>
           </div>
         </>
