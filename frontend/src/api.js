@@ -12,4 +12,12 @@ export function setAuthToken(token) {
   }
 }
 
+// Fetch a short-lived SIGNED URL for a document (kind = "job" | "candidate"), then return the
+// absolute URL usable as an iframe src / window.open target. Auth (Bearer) + tenant check happen
+// on the /url call; the returned URL carries a signed, expiring token.
+export async function signedDocUrl(kind, id) {
+  const { data } = await API.get(`/api/documents/${kind}/${id}/url`);
+  return (API.defaults.baseURL || "") + data.url;
+}
+
 export default API;

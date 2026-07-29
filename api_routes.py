@@ -626,9 +626,15 @@ async def schedule_candidate(cand_id: str, request: Request, authorization: str 
     db.update_session_analysis(session_id, analysis, meeting_url, scheduled_for.isoformat(),
                                jd_text, resume_text)
     db.save_questions(session_id, questions)
-    db.create_scheduled_interview(meeting_url=meeting_url, scheduled_for_iso=scheduled_for.isoformat(),
-                                  candidate_email=email, candidate_name=name, role=role,
-                                  session_id=session_id, organization_id=org, candidate_id=cand_id)
+    sched = db.create_scheduled_interview(meeting_url=meeting_url, scheduled_for_iso=scheduled_for.isoformat(),
+                                          candidate_email=email, candidate_name=name, role=role,
+                                          session_id=session_id, organization_id=org, candidate_id=cand_id)
+    if not sched:
+        # The scheduled-interview row wasn't created — most likely the DB unique constraint
+        # (uq_scheduled_interviews_candidate) rejecting a concurrent duplicate schedule. Don't email
+        # or report success; the orphan session self-expires via the stuck-session cleaner.
+        raise HTTPException(status_code=409,
+                            detail="This candidate was just scheduled by another request — refresh to see it.")
 
     IST = timezone(timedelta(hours=5, minutes=30))
     when_human = scheduled_for.astimezone(IST).strftime("%Y-%m-%d %H:%M") + " IST"
@@ -663,10 +669,15 @@ def list_interviews(authorization: str = Header(None)):
     return out
 
 
-# ─── DOCUMENT PREVIEW (served by id for iframe <src>; UUID-scoped, no header — see note) ──
-# NOTE: these are loaded as iframe/window.open sources, which cannot send an Authorization
-# header, so they authenticate by unguessable UUID only. Fine for an internal tool; Phase 3
-# should move to short-lived signed URLs (esp. for resumes, which are candidate PII).
+# ─── DOCUMENT PREVIEW (short-lived SIGNED URLs) ───────────────────────────────
+# iframes / window.open can't send an Authorization header, so instead of serving PDFs by bare
+# UUID we mint a short-lived signed token from an AUTHENTICATED + tenant-checked endpoint, and the
+# serve endpoint requires it. Resumes are candidate PII — this stops UUID-guessing and link leakage
+# (browser history / referer / proxy logs) from exposing them beyond a few minutes.
+_DOC_SECRET = os.getenv("DOC_URL_SECRET") or os.getenv("APP_ENCRYPTION_KEY") or ""
+_DOC_TTL = int(os.getenv("DOC_URL_TTL_SEC", "600"))   # signed-link validity (seconds)
+
+
 def _is_uuid(s: str) -> bool:
     try:
         uuid.UUID(str(s)); return True
@@ -674,10 +685,47 @@ def _is_uuid(s: str) -> bool:
         return False
 
 
+def _sign_doc(kind: str, doc_id: str) -> str:
+    import jwt, time
+    if not _DOC_SECRET:
+        raise HTTPException(status_code=500, detail="Document signing not configured (set APP_ENCRYPTION_KEY).")
+    return jwt.encode({"typ": "doc", "kind": kind, "id": doc_id, "exp": int(time.time()) + _DOC_TTL},
+                      _DOC_SECRET, algorithm="HS256")
+
+
+def _verify_doc(kind: str, doc_id: str, token: str) -> bool:
+    if not _DOC_SECRET or not token:
+        return False
+    try:
+        import jwt
+        p = jwt.decode(token, _DOC_SECRET, algorithms=["HS256"])
+    except Exception:
+        return False
+    return p.get("typ") == "doc" and p.get("kind") == kind and p.get("id") == doc_id
+
+
+@router.get("/api/documents/job/{job_id}/url")
+def document_job_url(job_id: str, authorization: str = Header(None)):
+    """Authenticated + tenant-checked: mint a short-lived signed URL for this org's JD PDF."""
+    _, m = _require_membership(authorization)
+    if not db.get_job_opening(job_id, _org_of(m)):
+        raise HTTPException(status_code=404, detail="Job opening not found.")
+    return {"url": f"/api/documents/job/{job_id}?token={_sign_doc('job', job_id)}"}
+
+
+@router.get("/api/documents/candidate/{cand_id}/url")
+def document_candidate_url(cand_id: str, authorization: str = Header(None)):
+    """Authenticated + tenant-checked: mint a short-lived signed URL for this org's resume PDF."""
+    _, m = _require_membership(authorization)
+    if not db.get_candidate(cand_id, _org_of(m)):
+        raise HTTPException(status_code=404, detail="Candidate not found.")
+    return {"url": f"/api/documents/candidate/{cand_id}?token={_sign_doc('candidate', cand_id)}"}
+
+
 @router.get("/api/documents/job/{job_id}")
-def document_job(job_id: str):
-    if not _is_uuid(job_id):   # reject non-UUID ids (path-traversal defence-in-depth)
-        raise HTTPException(status_code=404, detail="Not found.")
+def document_job(job_id: str, token: str = ""):
+    if not _is_uuid(job_id) or not _verify_doc("job", job_id, token):
+        raise HTTPException(status_code=403, detail="Invalid or expired document link.")
     path = os.path.join(JD_DIR, f"{job_id}.pdf")
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="No JD document on file for this opening.")
@@ -685,9 +733,9 @@ def document_job(job_id: str):
 
 
 @router.get("/api/documents/candidate/{cand_id}")
-def document_candidate(cand_id: str):
-    if not _is_uuid(cand_id):
-        raise HTTPException(status_code=404, detail="Not found.")
+def document_candidate(cand_id: str, token: str = ""):
+    if not _is_uuid(cand_id) or not _verify_doc("candidate", cand_id, token):
+        raise HTTPException(status_code=403, detail="Invalid or expired document link.")
     path = os.path.join(RESUME_DIR, f"{cand_id}.pdf")
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="No resume on file for this candidate.")
