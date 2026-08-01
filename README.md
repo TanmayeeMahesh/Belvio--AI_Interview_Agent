@@ -1,6 +1,6 @@
 
 
-# Belvio — AI Interview Agent
+# Belvio-AI Interview Agent
 
 An end-to-end automated technical interview platform. Upload a résumé and job description, and Belvio handles everything — candidate analysis, question generation, email invite, a live AI-conducted voice interview, scoring, and a PDF report — autonomously.
 
