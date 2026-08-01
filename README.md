@@ -1,11 +1,4 @@
----
-title: Belvio AI Interview Agent
-emoji: 🎤
-colorFrom: blue
-colorTo: indigo
-sdk: docker
-pinned: false
----
+
 
 # Belvio — AI Interview Agent
 
