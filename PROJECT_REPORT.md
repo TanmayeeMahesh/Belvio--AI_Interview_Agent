@@ -1,10 +1,5 @@
 # Belvio — AI Interview Agent · Project Report
 
-> **Version:** Post-deployment iteration (updated after Hugging Face + Vercel launch and the scoring/recording/email fixes).
-> **Audience:** Engineers (low-level "how it works") **and** stakeholders (application-level "what it does and why").
-> **One-line definition:** An autonomous platform that takes a résumé + job description, conducts a *live voice interview* with a candidate through a meeting bot, then scores it and produces a hiring report — with no human interviewer in the loop.
-
----
 
 ## 1. What Belvio Is (Application Level)
 
