@@ -965,17 +965,33 @@ def hr_analyze_integrity(session_id: str, authorization: str = Header(None)):
 
 @router.get("/api/hr/session/{session_id}/recording")
 def hr_recording_url(session_id: str, authorization: str = Header(None)):
-    """Return a FRESH pre-signed recording URL (Recall's links expire in hours, so we re-fetch
-    on demand using the session's bot_id instead of serving the stale cached URL)."""
-    _require_session_in_org(authorization, session_id)
+    _require_user(authorization)
+
+    session = db.get_session_full(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # 1. Try to get a fresh URL from Recall
     bot_id = db.get_bot_id_for_session(session_id)
-    if not bot_id:
-        raise HTTPException(status_code=404, detail="No recording for this session")
-    import app_full  # lazy import avoids a circular import at module load
-    url = app_full.get_fresh_recording_url(bot_id)
-    if not url:
-        raise HTTPException(status_code=404, detail="Recording not available yet")
-    return {"url": url}
+
+    if bot_id:
+        import app_full
+        url = app_full.get_fresh_recording_url(bot_id)
+
+        if url:
+            return {"url": url}
+
+    # 2. If Recall is unavailable, use the URL saved in Supabase
+    saved_url = session.get("session", {}).get("recording_url")
+
+    if saved_url:
+        return {"url": saved_url}
+
+    # 3. Nothing available
+    raise HTTPException(
+        status_code=404,
+        detail="Recording is no longer available"
+    )
 
 
 @router.get("/api/hr/report/{session_id}/pdf")
