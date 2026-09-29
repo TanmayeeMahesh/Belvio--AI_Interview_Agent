@@ -375,8 +375,14 @@ async def create_job_opening(title: str = Form(...), description: str = Form("")
         tmp = os.path.join(JD_DIR, f"_tmp_{uuid.uuid4()}_{jd_file.filename}")
         with open(tmp, "wb") as f:
             f.write(jd_bytes)
-        jd_text = extraction.extract_text(tmp)
-        os.remove(tmp)
+        try:
+            jd_text = extraction.extract_text(tmp)
+        except Exception as e:   # unreadable / scanned / corrupt PDF — keep the file for preview, skip text
+            print(f"[create_job_opening] JD text extraction failed (non-fatal): {e}")
+            jd_text = ""
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
 
     # Role for the question bank: honour HR's explicit choice (dropdown, or "Other" → match|llm),
     # else resolve from the title (bank if it matches a stored role, else LLM).
@@ -401,7 +407,8 @@ async def create_job_opening(title: str = Form(...), description: str = Form("")
     if jd_text:
         try:
             jd_analysis = extraction.analyze_documents(jd_text, "", title, keys=keys)
-        except extraction.llm_stack.LLMExhausted:
+        except Exception as e:   # LLMExhausted / missing-or-invalid key / provider network error — all non-fatal
+            print(f"[create_job_opening] JD analysis skipped (non-fatal): {e}")
             jd_analysis = {}   # non-fatal: card still usable, gap analysis just won't have JD context
 
     qc = max(10, min(16, int(questionCount or 12)))
