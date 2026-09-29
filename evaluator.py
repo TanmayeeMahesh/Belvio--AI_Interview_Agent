@@ -15,7 +15,7 @@ import db
 
 load_dotenv()
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-EVAL_MODEL = "llama-3.3-70b-versatile"     # rigorous judge; runs in background, latency hidden
+EVAL_MODEL = "qwen/qwen3.8-27b"     # llama-3.3-70b retired on Groq; rigorous judge, runs in background
 
 # Dimension weights (backend-defined, not HR-editable — US-AG-07 AC-01)
 # 4 dimensions per spec; "clarity_communication" merges the old clarity + communication.

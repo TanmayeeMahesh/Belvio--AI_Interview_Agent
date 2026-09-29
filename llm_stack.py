@@ -78,7 +78,7 @@ def _call_groq(system: str, user: str, max_tokens: int, key: str) -> str:
     from groq import Groq
     client = Groq(api_key=key)
     resp = client.chat.completions.create(
-        model="openai/gpt-oss-120b", max_tokens=max_tokens,   # llama-3.3-70b-versatile retired on Groq
+        model="qwen/qwen3.8-27b", max_tokens=max_tokens,   # llama-3.3-70b retired; qwen answers directly (gpt-oss reasons away small budgets)
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}])
     return resp.choices[0].message.content
 

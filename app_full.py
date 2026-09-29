@@ -39,7 +39,7 @@ GROQ_API_KEY     = os.getenv("GROQ_API_KEY")
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
 # default to Sarvam when a key is present, else gTTS; override with TTS_PROVIDER=gtts|sarvam
 TTS_PROVIDER   = os.getenv("TTS_PROVIDER", "sarvam" if SARVAM_API_KEY else "gtts").lower()
-SARVAM_MODEL   = os.getenv("SARVAM_MODEL", "bulbul:v2")    # documented; v2 default speaker = anushka
+SARVAM_MODEL   = os.getenv("SARVAM_MODEL", "bulbul:v3")    # bulbul:v2 deprecated by Sarvam; v3 is the replacement
 SARVAM_SPEAKER = os.getenv("SARVAM_SPEAKER", "anushka")
 SARVAM_LANG    = os.getenv("SARVAM_LANG", "en-IN")
 
@@ -51,8 +51,8 @@ SCHEDULER_ENABLED  = os.getenv("SCHEDULER_ENABLED", "true").lower() == "true"
 
 BOT_NAME    = "AI Interviewer (Sandbox)"
 RECALL_BASE = f"https://{os.getenv('RECALL_REGION', 'ap-northeast-1')}.recall.ai/api/v1"
-GATE_MODEL  = "llama-3.1-8b-instant"
-REPLY_MODEL = "llama-3.1-8b-instant"
+GATE_MODEL  = "qwen/qwen3.8-27b"   # llama-3.1-8b-instant retired on Groq; qwen answers directly at tiny max_tokens
+REPLY_MODEL = "qwen/qwen3.8-27b"
 
 FOLLOWUPS_PER_Q    = 1
 SILENCE_GATE       = 2.0

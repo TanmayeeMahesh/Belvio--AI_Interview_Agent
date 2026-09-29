@@ -20,7 +20,7 @@ import db
 
 load_dotenv()
 
-_PROCTOR_MODEL = "llama-3.3-70b-versatile"   # text reasoning; runs in background, latency hidden
+_PROCTOR_MODEL = "qwen/qwen3.8-27b"   # llama-3.3-70b retired on Groq; text reasoning, runs in background
 
 # ── Local CV models (baked into the image at build time; see Dockerfile) ──
 _MODELS_DIR = os.getenv("PROCTOR_MODELS_DIR", os.path.join(os.path.dirname(__file__), "models"))

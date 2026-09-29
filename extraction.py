@@ -69,8 +69,10 @@ Return EXACTLY this JSON (no deviations):
   "gapAnalysisText": "1-2 short sentences explicitly stating what key skills from the JD the candidate lacks."
 }}"""
     result = llm_stack.call_json(system, user, job="parsing", max_tokens=1200, keys=keys)
-    if not result:
-        logger.warning("analyze_documents: parse failed, returning minimal fallback")
+    if isinstance(result, list):   # some models wrap the object in a 1-element array
+        result = result[0] if (result and isinstance(result[0], dict)) else None
+    if not result or not isinstance(result, dict):
+        logger.warning("analyze_documents: parse failed / not a dict, returning minimal fallback")
         return {"candidateName": "Candidate", "candidateEmail": None, "jobRole": role,
                 "detectedLevel": "fresher", "levelReason": "", "yearsExperience": 0,
                 "skills": [], "technicalStack": [], "missingSkills": [], "jdMatchScore": 0,
