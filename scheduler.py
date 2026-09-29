@@ -116,12 +116,12 @@ def send_invite(to_email: str, candidate_name: str, meeting_url: str,
     try:
         ctx = ssl.create_default_context()
         try:
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ctx) as server:
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ctx, timeout=8) as server:
                 server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
                 server.send_message(msg)
         except (OSError, smtplib.SMTPException) as e465:
             print(f"[WARN]  SMTP port 465 failed ({e465}), trying STARTTLS port 587…")
-            with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            with smtplib.SMTP("smtp.gmail.com", 587, timeout=8) as server:
                 server.ehlo(); server.starttls(context=ctx); server.ehlo()
                 server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
                 server.send_message(msg)
