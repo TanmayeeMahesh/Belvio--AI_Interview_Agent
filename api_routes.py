@@ -511,8 +511,14 @@ async def upload_candidate(resume: UploadFile = File(...), job_opening_id: str =
     tmp = os.path.join(RESUME_DIR, f"_tmp_{uuid.uuid4()}_{resume.filename}")
     with open(tmp, "wb") as f:
         f.write(resume_bytes)
-    resume_text = extraction.extract_text(tmp)
-    os.remove(tmp)
+    try:
+        resume_text = extraction.extract_text(tmp)
+    except Exception as e:   # unreadable / scanned / corrupt PDF
+        print(f"[upload_candidate] resume text extraction failed: {e}")
+        resume_text = ""
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
     if not resume_text:
         raise HTTPException(status_code=400, detail="Could not read any text from the resume.")
 
@@ -523,6 +529,10 @@ async def upload_candidate(resume: UploadFile = File(...), job_opening_id: str =
     except extraction.llm_stack.LLMExhausted as e:
         raise HTTPException(status_code=429,
                             detail={"error": "llm_exhausted", "providers": e.providers_tried})
+    except Exception as e:   # missing/invalid key, provider network error, etc. — clear message, not a raw 500
+        print(f"[upload_candidate] resume analysis failed: {e}")
+        raise HTTPException(status_code=503,
+                            detail="Could not analyse the resume right now (AI service error). Please try again.")
 
     cand = db.create_candidate_full(org, job_opening_id,
                                     analysis.get("candidateName") or "Candidate",

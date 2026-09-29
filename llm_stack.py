@@ -50,7 +50,8 @@ def parse_json(text: str):
 def _call_gemini(system: str, user: str, max_tokens: int, key: str) -> str:
     import google.generativeai as genai
     genai.configure(api_key=key)
-    model = genai.GenerativeModel("gemini-2.0-flash", system_instruction=system)
+    # gemini-2.0-flash was retired (404). Use the -latest alias so this can't go stale again.
+    model = genai.GenerativeModel("gemini-flash-latest", system_instruction=system)
     resp = model.generate_content(user, generation_config={"max_output_tokens": max_tokens})
     return resp.text
 
@@ -58,7 +59,7 @@ def _call_claude(system: str, user: str, max_tokens: int, key: str) -> str:
     from anthropic import Anthropic
     client = Anthropic(api_key=key)
     resp = client.messages.create(
-        model="claude-3-5-sonnet-20240620", max_tokens=max_tokens,
+        model="claude-haiku-4-5", max_tokens=max_tokens,   # 3-5-sonnet-20240620 retired; current fast model
         system=system, messages=[{"role": "user", "content": user}])
     return resp.content[0].text
 
@@ -66,7 +67,7 @@ def _call_groq(system: str, user: str, max_tokens: int, key: str) -> str:
     from groq import Groq
     client = Groq(api_key=key)
     resp = client.chat.completions.create(
-        model="llama-3.3-70b-versatile", max_tokens=max_tokens,
+        model="openai/gpt-oss-120b", max_tokens=max_tokens,   # llama-3.3-70b-versatile retired on Groq
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}])
     return resp.choices[0].message.content
 
