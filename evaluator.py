@@ -15,7 +15,7 @@ import db
 
 load_dotenv()
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-EVAL_MODEL = "llama-3.3-70b-versatile"     # rigorous judge; runs in background, latency hidden
+EVAL_MODEL = "openai/gpt-oss-120b"     # rigorous judge; runs in background, latency hidden
 
 # Dimension weights (backend-defined, not HR-editable — US-AG-07 AC-01)
 # 4 dimensions per spec; "clarity_communication" merges the old clarity + communication.
