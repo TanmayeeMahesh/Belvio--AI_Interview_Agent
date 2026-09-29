@@ -8,9 +8,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /code/requirements.txt
-# Install the CPU-only torch wheel FIRST (~200 MB vs ~2 GB CUDA) so the fine-tuned flan-t5 gap
-# model runs on CPU without pulling the CUDA stack; requirements.txt then sees torch satisfied.
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+# Upgrade pip first (the base image's older pip mis-handles some newer wheels and
+# falls back to source builds that fail), then install the Python deps. No torch:
+# the fine-tuned Flan-T5 gap model is not enabled in this deploy, and the rest of
+# the stack (proctoring CV uses onnxruntime) needs no PyTorch.
+RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir --upgrade -r /code/requirements.txt
 
 # Bake the local CV models into the image so runtime needs no network:
