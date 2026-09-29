@@ -34,16 +34,27 @@ def _is_rate_error(msg: str) -> bool:
 
 
 def parse_json(text: str):
-    """Tolerant JSON extraction from an LLM reply (strips fences, grabs first {...} or [...])."""
-    try:
-        text = text.replace("```json", "").replace("```", "").strip()
-        m = re.search(r"(\{.*\}|\[.*\])", text, re.DOTALL)
-        if m:
-            text = m.group(1)
-        return json.loads(text)
-    except Exception as e:
-        logger.warning(f"parse_json failed: {str(e)[:150]}")
+    """Tolerant JSON extraction from an LLM reply. Strips code fences, then decodes the FIRST
+    complete {...} / [...] value and ignores any trailing prose. Reasoning models (e.g. Groq
+    gpt-oss) sometimes append commentary after the JSON, which made json.loads raise
+    'Extra data' and drop the whole analysis — raw_decode fixes that."""
+    if not text:
         return None
+    cleaned = text.replace("```json", "").replace("```", "").strip()
+    try:
+        return json.loads(cleaned)          # fast path: already clean JSON
+    except Exception:
+        pass
+    dec = json.JSONDecoder()
+    for i, ch in enumerate(cleaned):        # find the first '{'/'[' that starts a valid value
+        if ch in "{[":
+            try:
+                obj, _ = dec.raw_decode(cleaned[i:])
+                return obj
+            except Exception:
+                continue
+    logger.warning(f"parse_json failed: {cleaned[:150]}")
+    return None
 
 
 # ─── Individual provider callers (each returns text or raises) ────────────
