@@ -50,7 +50,7 @@ def parse_json(text: str):
 def _call_gemini(system: str, user: str, max_tokens: int, key: str) -> str:
     import google.generativeai as genai
     genai.configure(api_key=key)
-    model = genai.GenerativeModel("gemini-3.6-flash", system_instruction=system)
+    model = genai.GenerativeModel("gemini-2.0-flash", system_instruction=system)
     resp = model.generate_content(user, generation_config={"max_output_tokens": max_tokens})
     return resp.text
 
@@ -58,7 +58,7 @@ def _call_claude(system: str, user: str, max_tokens: int, key: str) -> str:
     from anthropic import Anthropic
     client = Anthropic(api_key=key)
     resp = client.messages.create(
-        model="claude-sonnet-4-5-20250929", max_tokens=max_tokens,
+        model="claude-3-5-sonnet-20240620", max_tokens=max_tokens,
         system=system, messages=[{"role": "user", "content": user}])
     return resp.content[0].text
 
@@ -66,7 +66,7 @@ def _call_groq(system: str, user: str, max_tokens: int, key: str) -> str:
     from groq import Groq
     client = Groq(api_key=key)
     resp = client.chat.completions.create(
-        model="openai/gpt-oss-120b", max_tokens=max_tokens,
+        model="llama-3.3-70b-versatile", max_tokens=max_tokens,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}])
     return resp.choices[0].message.content
 
